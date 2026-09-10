@@ -190,10 +190,20 @@ class Collector:
 
     def logs(self, addresses, lo, hi, topics=None):
         out = []
-        for i in range(0, len(addresses), 50):
-            f = {'address': addresses[i:i + 50], 'fromBlock': hex(lo), 'toBlock': hex(hi)}
+        # The provider accepts the full watch set in one filter. Splitting every
+        # 50 addresses made catch-up slower as new launches accumulated.
+        groups = [addresses] if addresses else []
+        while groups:
+            group = groups.pop()
+            f = {'address': group, 'fromBlock': hex(lo), 'toBlock': hex(hi)}
             if topics: f['topics'] = topics
-            rows = self.rpc.call('eth_getLogs', [f])
+            try:
+                rows = self.rpc.call('eth_getLogs', [f])
+            except RpcError:
+                if len(group) <= 50: raise
+                middle = len(group) // 2
+                groups.extend([group[middle:], group[:middle]])
+                continue
             if not isinstance(rows, list): raise RpcError('invalid logs response')
             received = now()
             rows = [dict(r, _received_at=received) for r in rows]
