@@ -1,0 +1,369 @@
+{
+  "retrieved_date": "2026-09-10",
+  "pons_commit": "0445a2c39df623169dc4cf3a939308ef4e0f7a60",
+  "source_hashes": {
+    "PonsLaunchFactory.sol": "56370e991f3fb1ee0aa06a35be51de63d68bbc9b8ddeb9bc5953f2c697ae0652",
+    "PonsV2LaunchFactory.sol": "561475202f7635d9c2caa1c4eed196642bedc2c32ed77afc6297175ef86ea2c7",
+    "PonsV2BondingCurve.sol": "f3449b3432aec9c85c4fc282ea467dd37506c1466318a1bc83235b4048e016cf"
+  },
+  "abi_subset": {
+    "pons_v1": [
+      {
+        "name": "TokenLaunched",
+        "fields": [
+          [
+            "address",
+            "token",
+            "indexed"
+          ],
+          [
+            "address",
+            "deployer",
+            "indexed"
+          ],
+          [
+            "address",
+            "dexFactory",
+            "indexed"
+          ],
+          [
+            "address",
+            "pairToken"
+          ],
+          [
+            "address",
+            "pool"
+          ],
+          [
+            "uint256",
+            "dexId"
+          ],
+          [
+            "uint256",
+            "launchConfigId"
+          ],
+          [
+            "uint256",
+            "positionId"
+          ],
+          [
+            "uint256",
+            "restrictionsEndBlock"
+          ],
+          [
+            "uint256",
+            "initialBuyAmount"
+          ]
+        ],
+        "topic": "0xdb51ea9ad51ab453a65a4cb7e60c3cb378c9501bb002609f8f97778fb6c4235a"
+      }
+    ],
+    "pons_v2": [
+      {
+        "name": "TokenLaunched",
+        "fields": [
+          [
+            "address",
+            "token",
+            "indexed"
+          ],
+          [
+            "address",
+            "curve",
+            "indexed"
+          ],
+          [
+            "address",
+            "deployer",
+            "indexed"
+          ],
+          [
+            "address",
+            "pairToken"
+          ],
+          [
+            "uint256",
+            "launchConfigId"
+          ],
+          [
+            "uint256",
+            "graduationThreshold"
+          ]
+        ],
+        "topic": "0x8d4aad4953d0ca700d468f3753aa14432d1b35b43ec6409f051fb6aa43a89607"
+      },
+      {
+        "name": "LaunchSwept",
+        "fields": [
+          [
+            "address",
+            "token",
+            "indexed"
+          ],
+          [
+            "uint256",
+            "quoteOut"
+          ],
+          [
+            "uint256",
+            "tokenOut"
+          ]
+        ],
+        "topic": "0xcdb72f157fd3666758a6ce201387ffb52038c7562e4fff352828da1096c4b6b4"
+      }
+    ],
+    "curve": [
+      {
+        "name": "CurveBuy",
+        "fields": [
+          [
+            "address",
+            "buyer",
+            "indexed"
+          ],
+          [
+            "address",
+            "recipient",
+            "indexed"
+          ],
+          [
+            "uint256",
+            "quoteIn"
+          ],
+          [
+            "uint256",
+            "tokensOut"
+          ],
+          [
+            "uint256",
+            "fee"
+          ],
+          [
+            "uint256",
+            "tax"
+          ]
+        ],
+        "topic": "0xec36bf571f136799e8dc0b0b8bea4b04d8bd3d43de838aab0d5fc21d4cbfc455"
+      },
+      {
+        "name": "CurveSell",
+        "fields": [
+          [
+            "address",
+            "seller",
+            "indexed"
+          ],
+          [
+            "address",
+            "recipient",
+            "indexed"
+          ],
+          [
+            "uint256",
+            "tokensIn"
+          ],
+          [
+            "uint256",
+            "quoteOut"
+          ],
+          [
+            "uint256",
+            "fee"
+          ],
+          [
+            "uint256",
+            "tax"
+          ]
+        ],
+        "topic": "0x8113d738abdcb6b38357e9d53a54a7157861a09031b453651f0fe7fe151f59df"
+      },
+      {
+        "name": "CurveCompleted",
+        "fields": [
+          [
+            "address",
+            "recipient"
+          ],
+          [
+            "uint256",
+            "quoteOut"
+          ],
+          [
+            "uint256",
+            "tokenOut"
+          ]
+        ],
+        "topic": "0xf8d37a90738ae063b8b8058b66f5880cf3cf7ab0c5d4fa78219696591dfbfb67"
+      },
+      {
+        "name": "CurveBuyRefunded",
+        "fields": [
+          [
+            "address",
+            "buyer",
+            "indexed"
+          ],
+          [
+            "uint256",
+            "refund"
+          ]
+        ],
+        "topic": "0xa69e8258ccc7b9bbb70ab953fc2d1062b4ee28b8ca827534097e1732e87b0262"
+      }
+    ],
+    "v3_pool": [
+      {
+        "name": "Swap",
+        "fields": [
+          [
+            "address",
+            "sender",
+            "indexed"
+          ],
+          [
+            "address",
+            "recipient",
+            "indexed"
+          ],
+          [
+            "int256",
+            "amount0"
+          ],
+          [
+            "int256",
+            "amount1"
+          ],
+          [
+            "uint160",
+            "sqrtPriceX96"
+          ],
+          [
+            "uint128",
+            "liquidity"
+          ],
+          [
+            "int24",
+            "tick"
+          ]
+        ],
+        "topic": "0xc42079f94a6350d7e6235f29174924f928cc2ac818eb64fed8004e115fbcca67"
+      }
+    ],
+    "v4": [
+      {
+        "name": "Initialize",
+        "fields": [
+          [
+            "bytes32",
+            "id",
+            "indexed"
+          ],
+          [
+            "address",
+            "currency0",
+            "indexed"
+          ],
+          [
+            "address",
+            "currency1",
+            "indexed"
+          ],
+          [
+            "uint24",
+            "fee"
+          ],
+          [
+            "int24",
+            "tickSpacing"
+          ],
+          [
+            "address",
+            "hooks"
+          ],
+          [
+            "uint160",
+            "sqrtPriceX96"
+          ],
+          [
+            "int24",
+            "tick"
+          ]
+        ],
+        "topic": "0xdd466e674ea557f56295e2d0218a125ea4b4f0f6f3307b95f85e6110838d6438"
+      },
+      {
+        "name": "ModifyLiquidity",
+        "fields": [
+          [
+            "bytes32",
+            "id",
+            "indexed"
+          ],
+          [
+            "address",
+            "sender",
+            "indexed"
+          ],
+          [
+            "int24",
+            "tickLower"
+          ],
+          [
+            "int24",
+            "tickUpper"
+          ],
+          [
+            "int256",
+            "liquidityDelta"
+          ],
+          [
+            "bytes32",
+            "salt"
+          ]
+        ],
+        "topic": "0xf208f4912782fd25c7f114ca3723a2d5dd6f3bcc3ac8db5af63baa85f711d5ec"
+      },
+      {
+        "name": "Swap",
+        "fields": [
+          [
+            "bytes32",
+            "id",
+            "indexed"
+          ],
+          [
+            "address",
+            "sender",
+            "indexed"
+          ],
+          [
+            "int128",
+            "amount0"
+          ],
+          [
+            "int128",
+            "amount1"
+          ],
+          [
+            "uint160",
+            "sqrtPriceX96"
+          ],
+          [
+            "uint128",
+            "liquidity"
+          ],
+          [
+            "int24",
+            "tick"
+          ],
+          [
+            "uint24",
+            "fee"
+          ]
+        ],
+        "topic": "0x40e9cecb9f5f1f1c5b9c97dec2917b7ee92e57ba5563708daca94dd84ad7112f"
+      }
+    ]
+  },
+  "compiled_runtime_match_verified": false
+}
