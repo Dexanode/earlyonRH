@@ -157,7 +157,7 @@ def cycle(db, rpc, tx_limit=5):
 
 
 def main():
-    url = os.environ.get('RPC_HTTP_URL')
+    url = os.environ.get('ENRICHMENT_RPC_HTTP_URL') or os.environ.get('RPC_HTTP_URL')
     if not url: raise ValueError('RPC_HTTP_URL required')
     daily = int(os.environ.get('ENRICHMENT_DAILY_RPC_BUDGET', '250'))
     if not 1 <= daily <= 100000: raise ValueError('invalid ENRICHMENT_DAILY_RPC_BUDGET')
