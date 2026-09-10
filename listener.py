@@ -66,6 +66,35 @@ class RPC:
             raise RpcError('missing or mismatched block')
         return b
 
+    def many(self, calls):
+        """Bounded JSON-RPC batches; match by ID, never response order."""
+        output = []
+        for offset in range(0, len(calls), 50):
+            group = calls[offset:offset + 50]
+            if getattr(self, 'batch_disabled', False):
+                output.extend(self.call(m, p) for m, p in group)
+                continue
+            time.sleep(max(0, self.spacing - (time.monotonic() - self.last)))
+            self.last = time.monotonic()
+            body = json.dumps([dict(jsonrpc='2.0', id=i, method=m, params=p)
+                               for i, (m, p) in enumerate(group)]).encode()
+            req = urllib.request.Request(self.url, data=body, headers={'Content-Type': 'application/json'})
+            try:
+                with urllib.request.urlopen(req, timeout=20) as res:
+                    rows = json.load(res)
+                if not isinstance(rows, list): raise RpcError('batch unsupported')
+                mapped = {r.get('id'): r for r in rows}
+                if len(rows) != len(group) or set(mapped) != set(range(len(group))):
+                    raise RpcError('incomplete or duplicate batch response')
+                if any('result' not in r or r.get('error') for r in rows):
+                    raise RpcError('batch item failed')
+                output.extend(mapped[i]['result'] for i in range(len(group)))
+            except (OSError, ValueError, RpcError, TypeError, AttributeError):
+                LOG.warning('RPC batch unavailable; falling back to individual reads')
+                self.batch_disabled = True
+                output.extend(self.call(m, p) for m, p in group)
+        return output
+
 
 def database(path):
     Path(path).parent.mkdir(parents=True, exist_ok=True)
@@ -163,7 +192,15 @@ class Collector:
         return out
 
     def ingest(self, lo, hi):
-        headers = {n: self.rpc.block(n) for n in range(lo, hi + 1)}
+        started = time.monotonic()
+        heights = list(range(lo, hi + 1))
+        if hasattr(self.rpc, 'many'):
+            blocks = self.rpc.many([('eth_getBlockByNumber', [hex(n), False]) for n in heights])
+            if any(not b or int(b['number'], 16) != n for n, b in zip(heights, blocks)):
+                raise RpcError('missing or mismatched block')
+            headers = dict(zip(heights, blocks))
+        else:
+            headers = {n: self.rpc.block(n) for n in heights}
         parent = self.db.execute('SELECT hash FROM blocks WHERE number=?', (lo - 1,)).fetchone()[0]
         for n, b in headers.items():
             if b['parentHash'] != parent: raise RpcError('chain changed during block read')
@@ -187,7 +224,10 @@ class Collector:
             rows.extend(self.logs(list(watches), lo, hi))
         unique = {(r['transactionHash'], int(r['logIndex'], 16)): r for r in rows}
         if len(unique) > self.max_logs: raise RpcError('too many combined logs; reduce chunk')
-        receipts = {}
+        transactions = list(dict.fromkeys(r['transactionHash'] for r in unique.values()))
+        receipts = dict(zip(transactions, self.rpc.many([
+            ('eth_getTransactionReceipt', [tx]) for tx in transactions
+        ]))) if hasattr(self.rpc, 'many') else {}
         prepared = []
         for key, row in sorted(unique.items(), key=lambda x: (int(x[1]['blockNumber'], 16), x[0][1])):
             n = int(row['blockNumber'], 16)
@@ -196,9 +236,10 @@ class Collector:
             tx = row['transactionHash']
             if tx not in receipts:
                 receipt = self.rpc.call('eth_getTransactionReceipt', [tx])
-                if not receipt or receipt['blockHash'] != row['blockHash'] or int(receipt['status'], 16) != 1:
-                    raise RpcError('receipt unavailable, reverted, or reorged')
                 receipts[tx] = receipt
+            receipt = receipts[tx]
+            if not receipt or receipt['blockHash'] != row['blockHash'] or int(receipt['status'], 16) != 1 or receipt.get('transactionHash') != tx:
+                raise RpcError('receipt unavailable, reverted, or reorged')
             matches = [r for r in receipts[tx]['logs'] if int(r['logIndex'], 16) == key[1]]
             if not matches or any(matches[0].get(k) != row.get(k) for k in ('address', 'data', 'topics', 'blockHash', 'transactionHash')):
                 raise RpcError('log does not match transaction receipt')
@@ -223,6 +264,7 @@ class Collector:
             set_meta(self.db, 'last_success', now())
             set_meta(self.db, 'status', 'healthy')
         LOG.info('committed blocks %s-%s events=%s child_watches=%s', lo, hi, len(prepared), len(watches))
+        LOG.info('range throughput %.2f blocks/sec', (hi - lo + 1) / max(time.monotonic() - started, 0.001))
         return len(prepared)
 
     def tick(self):
@@ -329,7 +371,7 @@ def main():
     p.add_argument('--db', default='data/listener.sqlite')
     p.add_argument('--start-block', type=int)
     p.add_argument('--confirmations', type=int, default=2)
-    p.add_argument('--chunk', type=int, default=10)
+    p.add_argument('--chunk', type=int, default=100)
     p.add_argument('--poll', type=float, default=2)
     p.add_argument('--request-spacing', type=float, default=0.25)
     p.add_argument('--output', default='data/timeline.json')
