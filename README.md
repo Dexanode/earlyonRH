@@ -140,3 +140,14 @@ Jalankan tanpa Docker:
 ```
 
 Dashboard tersedia pada http://127.0.0.1:8080. Listener dan dashboard memakai schema yang sama; update ini tidak mengubah fingerprint ABI sehingga database lama tetap dapat digunakan. Index tambahan dibuat otomatis oleh listener untuk query radar.
+# Catch-up performance
+
+The collector batches block headers and transaction receipts, and scans the full
+watch list in one log filter (splitting only when rejected). Defaults retain the
+provider-compatible ten-block log range and 50 ms request spacing. HTTP 429 causes
+backoff without shrinking the range or fanning out into individual reads.
+
+Logs include per-stage timings. Compare cursor and head changes over the same
+interval: `healthy` indicates successful collection, not that the data is live.
+An increasing lag requires further provider/throughput investigation; waiting alone
+does not solve it. Existing databases resume their checkpoint after upgrades.
