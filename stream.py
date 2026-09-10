@@ -112,9 +112,6 @@ class StreamStore:
                     if name == 'TokenLaunched':
                         child = values['pool'] if kind == 'pons_v1' else values['curve']
                         w = dict(address=child, kind='v3_pool' if kind == 'pons_v1' else 'curve', asset=values['token'], created_block=n)
-                        if child not in watches:
-                            # Cover logs that arrived before a late launch notification.
-                            self.gap(n, min(target, n + 10))
                         watches[child] = w
                         self.db.execute('INSERT OR IGNORE INTO watches VALUES (?,?,?,?)', tuple(w.values()))
                     asset = values.get('token') or watches.get(address, {}).get('asset')

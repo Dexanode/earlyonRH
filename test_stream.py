@@ -30,7 +30,7 @@ class StoreTests(unittest.TestCase):
         self.assertEqual(self.db.execute('select count(*) from events').fetchone()[0], 2)
         self.assertEqual(self.db.execute('select count(*) from receipts').fetchone()[0], 0)
         self.assertEqual(read(self.path)['health']['transport'], 'websocket-logs')
-        self.assertGreater(read(self.path)['health']['recovery_blocks'], 0)
+        self.assertEqual(read(self.path)['health']['recovery_blocks'], 0)
 
     def test_pending_survives_restart_and_commits_after_three_heads(self):
         row = make_log('pons_v2', 0, LAUNCH, V2)
