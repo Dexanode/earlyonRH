@@ -7,7 +7,7 @@ import os
 import sqlite3
 import time
 
-from listener import RPC, RpcError, database, now
+from listener import RPC, RpcError, RateLimited, database, get_meta, now
 
 LOG = logging.getLogger('enricher')
 ZERO = '0x' + '0' * 40
@@ -120,6 +120,8 @@ def attribute_transactions(db, rpc, assets, limit):
             tx = rpc.call('eth_getTransactionByHash', [row['tx_hash']])
             sender = tx.get('from', '').lower() if tx else None
             relation = 'direct' if sender and sender == actor else 'routed' if sender else 'unknown'
+        except RateLimited:
+            break
         except RpcError as exc: error = str(exc)
         with db:
             db.execute('INSERT OR REPLACE INTO tx_attributions VALUES (?,?,?,?,?,?,?)',
@@ -134,7 +136,13 @@ def top_assets(db, limit=10):
       HAVING SUM(name='CurveBuy')>=3 ORDER BY COUNT(*) DESC LIMIT ?''', (head-3000, limit))]
 
 
-def cycle(db, rpc, tx_limit=25):
+def cycle(db, rpc, tx_limit=5):
+    heartbeat = get_meta(db, 'heartbeat')
+    try: fresh = (dt.datetime.now(dt.timezone.utc)-dt.datetime.fromisoformat(heartbeat)).total_seconds() < 30
+    except (TypeError, ValueError): fresh = False
+    if get_meta(db, 'status') != 'healthy' or not fresh:
+        LOG.info('live listener is not healthy; enrichment paused')
+        return
     assets = top_assets(db)
     cutoff = (dt.datetime.now(dt.timezone.utc)-dt.timedelta(hours=6)).isoformat()
     for asset in assets:
@@ -151,7 +159,7 @@ def cycle(db, rpc, tx_limit=25):
 def main():
     url = os.environ.get('RPC_HTTP_URL')
     if not url: raise ValueError('RPC_HTTP_URL required')
-    daily = int(os.environ.get('ENRICHMENT_DAILY_RPC_BUDGET', '1000'))
+    daily = int(os.environ.get('ENRICHMENT_DAILY_RPC_BUDGET', '250'))
     if not 1 <= daily <= 100000: raise ValueError('invalid ENRICHMENT_DAILY_RPC_BUDGET')
     db = database('data/live.sqlite'); schema(db)
     rpc = BudgetRPC(db, RPC(url, attempts=1, spacing=.25), daily)

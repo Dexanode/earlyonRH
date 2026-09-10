@@ -24,6 +24,7 @@ services:
         max-size: "10m"
         max-file: "3"
   enricher:
+    profiles: [enrichment]
     build: .
     command: ["python", "enricher.py"]
     env_file: .env
