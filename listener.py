@@ -132,6 +132,8 @@ class Collector:
         self.db, self.rpc, self.start = db, rpc, start
         self.confirmations, self.chunk = confirmations, chunk
         self.max_logs, self.max_reorg = max_logs, max_reorg
+        self.active_chunk = chunk
+        self.successful_ranges = 0
 
     def setup(self):
         if int(self.rpc.call('eth_chainId', []), 16) != CHAIN:
@@ -277,14 +279,21 @@ class Collector:
         if lo > target:
             with self.db: set_meta(self.db, 'status', 'healthy')
             return False
-        span = min(self.chunk, target - lo + 1)
+        span = min(self.active_chunk, target - lo + 1)
         while True:
             try:
                 self.ingest(lo, lo + span - 1)
+                self.successful_ranges += 1
+                if self.successful_ranges >= 100:
+                    self.active_chunk = min(self.chunk, self.active_chunk + 1)
+                    self.successful_ranges = 0
                 return lo + span - 1 < target
-            except RpcError:
+            except RpcError as exc:
                 if span <= 1: raise
                 span = max(1, span // 2)
+                self.active_chunk = span
+                self.successful_ranges = 0
+                LOG.warning('reducing range to %s blocks: %s', span, exc)
 
 
 def export(db, path):
