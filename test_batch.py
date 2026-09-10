@@ -50,7 +50,7 @@ class BatchTests(unittest.TestCase):
         with patch('urllib.request.urlopen', side_effect=respond):
             result = RPC('https://example.invalid', spacing=0).many([('read', [i]) for i in range(123)])
         self.assertEqual(result, list(range(123)))
-        self.assertEqual(sizes, [50, 50, 23])
+        self.assertEqual(sizes, [10] * 12 + [3])
 
     def test_duplicate_ids_fall_back_without_using_bad_results(self):
         rpc = RPC('https://example.invalid', spacing=0)

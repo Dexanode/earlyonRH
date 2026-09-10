@@ -76,8 +76,8 @@ class RPC:
     def many(self, calls):
         """Bounded JSON-RPC batches; match by ID, never response order."""
         output = []
-        for offset in range(0, len(calls), 50):
-            group = calls[offset:offset + 50]
+        for offset in range(0, len(calls), 10):
+            group = calls[offset:offset + 10]
             if getattr(self, 'batch_disabled', False):
                 output.extend(self.parallel(group))
                 continue
@@ -99,7 +99,7 @@ class RPC:
             except (OSError, ValueError, RpcError, TypeError, AttributeError) as exc:
                 if getattr(exc, 'code', None) == 429:
                     raise RateLimited('batch: provider rate limit') from None
-                LOG.warning('RPC batch unavailable; falling back to individual reads')
+                LOG.warning('RPC batch unavailable (%s); falling back to individual reads', getattr(exc, 'code', None) or type(exc).__name__)
                 self.batch_disabled = True
                 output.extend(self.parallel(group))
         return output
