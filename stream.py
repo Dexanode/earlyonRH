@@ -60,8 +60,10 @@ class StreamStore:
             ancestors = [h for h, v in self.headers.items() if v['hash'] == b['parentHash'] and h == n - 1]
             if not ancestors: raise RpcError('stream reorg ancestry unavailable; recovery required')
             self.rollback(n)
-        if self.head is not None and n > self.head + 1:
-            with self.db: self.gap(self.head + 1, n)
+        # Providers may coalesce newHeads while the independent log subscription
+        # continues delivering every matching log. A head-number jump alone is
+        # therefore not evidence of a data gap; missing event headers and reconnects
+        # are recovered explicitly elsewhere.
         self.headers[n] = dict(b)
         self.headers.move_to_end(n)
         while len(self.headers) > 4096: self.headers.popitem(last=False)

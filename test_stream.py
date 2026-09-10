@@ -57,6 +57,16 @@ class StoreTests(unittest.TestCase):
         self.assertEqual(get_meta(self.db, 'recovery_next'), '901')
         self.assertEqual(get_meta(self.db, 'recovery_target'), '1000')
 
+    def test_coalesced_heads_do_not_create_false_gap(self):
+        with self.db:
+            set_meta(self.db, 'recovery_next', 1)
+            set_meta(self.db, 'recovery_target', 0)
+        self.s.header(FakeRPC().block(5))
+        jumped = FakeRPC().block(9)
+        jumped['parentHash'] = h(8)
+        self.s.header(jumped)
+        self.assertEqual(get_meta(self.db, 'recovery_target'), '0')
+
     def test_replacement_header_rolls_back(self):
         row = make_log('pons_v2', 0, LAUNCH, V2)
         self.s.log(row); self.s.flush()
