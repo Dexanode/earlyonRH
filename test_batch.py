@@ -7,6 +7,20 @@ from urllib.error import HTTPError
 
 
 class BatchTests(unittest.TestCase):
+    def test_cached_headers_only_fill_ranges_not_canonical_checks(self):
+        rpc = RPC('https://example.invalid', spacing=0)
+        header = dict(number='0x2', timestamp='0x10', hash='0x'+'1'*64, parentHash='0x'+'0'*64)
+        rpc.remember_header(header)
+        with patch.object(rpc, 'many', return_value=[dict(header, number='0x3')]) as many:
+            self.assertEqual([b['number'] for b in rpc.range_headers([2, 3])], ['0x2', '0x3'])
+            many.assert_called_once_with([('eth_getBlockByNumber', ['0x3', False])])
+        with patch.object(rpc, 'call', return_value=header) as call:
+            rpc.block(2)
+            call.assert_called_once()
+        rpc.remember_header(dict(header, hash='0x'+'2'*64))
+        with patch.object(rpc, 'many', return_value=[]):
+            self.assertEqual(rpc.range_headers([2])[0]['hash'], '0x'+'2'*64)
+
     def test_rate_limit_does_not_fan_out_to_individual_requests(self):
         rpc = RPC('https://example.invalid', spacing=0)
         with patch('urllib.request.urlopen', side_effect=HTTPError('', 429, '', {}, None)), patch.object(rpc, 'parallel') as fallback:

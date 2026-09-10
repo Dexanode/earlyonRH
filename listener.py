@@ -12,6 +12,8 @@ import time
 import urllib.error
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor
+from collections import OrderedDict
+from threading import Lock
 
 from events import SPECS, decode
 
@@ -43,6 +45,34 @@ class RPC:
             raise ValueError('RPC_HTTP_URL must be HTTP(S)')
         self.url, self.attempts, self.spacing = url, attempts, spacing
         self.last = 0
+        self.headers = OrderedDict()
+        self.header_lock = Lock()
+
+    def remember_header(self, header):
+        try:
+            height = int(header['number'], 16)
+            int(header['timestamp'], 16)
+            if any(not isinstance(header[k], str) or len(header[k]) != 66 for k in ('hash', 'parentHash')):
+                return
+        except (KeyError, TypeError, ValueError):
+            return
+        with self.header_lock:
+            self.headers[height] = dict(header)
+            self.headers.move_to_end(height)
+            while len(self.headers) > 4096:
+                self.headers.popitem(last=False)
+
+    def range_headers(self, heights):
+        with self.header_lock:
+            found = {n: self.headers[n] for n in heights if n in self.headers}
+        missing = [n for n in heights if n not in found]
+        found.update(zip(missing, self.many([('eth_getBlockByNumber', [hex(n), False]) for n in missing])))
+        LOG.info('headers websocket=%s http=%s', len(heights) - len(missing), len(missing))
+        return [found[n] for n in heights]
+
+    def clear_headers(self):
+        with self.header_lock:
+            self.headers.clear()
 
     def call(self, method, params):
         # Error messages intentionally exclude endpoints: URLs can contain keys.
@@ -202,6 +232,7 @@ class Collector:
             set_meta(self.db, 'cursor', ancestor)
             set_meta(self.db, 'last_reorg', now())
         LOG.warning('reorg rollback to block %s', ancestor)
+        if hasattr(self.rpc, 'clear_headers'): self.rpc.clear_headers()
 
     def logs(self, addresses, lo, hi, topics=None):
         out = []
@@ -232,7 +263,7 @@ class Collector:
         started = time.monotonic()
         heights = list(range(lo, hi + 1))
         if hasattr(self.rpc, 'many'):
-            blocks = self.rpc.many([('eth_getBlockByNumber', [hex(n), False]) for n in heights])
+            blocks = self.rpc.range_headers(heights) if hasattr(self.rpc, 'range_headers') else self.rpc.many([('eth_getBlockByNumber', [hex(n), False]) for n in heights])
             if any(not b or int(b['number'], 16) != n for n, b in zip(heights, blocks)):
                 raise RpcError('missing or mismatched block')
             headers = dict(zip(heights, blocks))
@@ -330,6 +361,7 @@ class Collector:
             except RateLimited:
                 raise
             except RpcError as exc:
+                if hasattr(self.rpc, 'clear_headers'): self.rpc.clear_headers()
                 if span <= 1: raise
                 span = max(1, span // 2)
                 self.active_chunk = span
@@ -350,7 +382,7 @@ def export(db, path):
     temp = Path(str(path) + '.tmp'); temp.write_text(json.dumps(payload, indent=2)); temp.replace(path)
 
 
-async def ws_wakeup(url, wake):
+async def ws_wakeup(url, wake, rpc=None):
     from websockets.asyncio.client import connect
     while True:
         try:
@@ -363,7 +395,11 @@ async def ws_wakeup(url, wake):
                 if not response.get('result'): raise RpcError('WebSocket subscription refused')
                 LOG.info('WebSocket heads connected')
                 async for message in ws:
-                    if json.loads(message).get('method') == 'eth_subscription': wake.set()
+                    payload = json.loads(message)
+                    if payload.get('method') == 'eth_subscription':
+                        if rpc is not None:
+                            rpc.remember_header(payload.get('params', {}).get('result', {}))
+                        wake.set()
             await asyncio.sleep(1)
         except asyncio.CancelledError:
             raise
@@ -393,7 +429,7 @@ async def run(args):
         db.close()
         raise
     wake = asyncio.Event()
-    task = asyncio.create_task(ws_wakeup(os.environ['RPC_WS_URL'], wake)) if os.environ.get('RPC_WS_URL') else None
+    task = asyncio.create_task(ws_wakeup(os.environ['RPC_WS_URL'], wake, rpc)) if os.environ.get('RPC_WS_URL') else None
     try:
         while True:
             try:
@@ -410,6 +446,9 @@ async def run(args):
             try: await asyncio.wait_for(wake.wait(), args.poll)
             except asyncio.TimeoutError: pass
             wake.clear()
+            # Coalesce rapid head notifications into one scan near the tip.
+            # Backlog processing above still runs without this delay.
+            await asyncio.sleep(0.75)
     finally:
         if task:
             task.cancel()
