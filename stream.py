@@ -29,7 +29,7 @@ class StreamStore:
         db.execute('CREATE TABLE IF NOT EXISTS stream_pending(tx TEXT,idx INTEGER,block INTEGER,body TEXT,PRIMARY KEY(tx,idx))')
         with db:
             set_meta(db, 'transport', 'websocket-logs')
-            set_meta(db, 'validation', 'provider log matched to block header; no separate receipt verification')
+            set_meta(db, 'validation', 'provider stream log held for three heads; no separate header/receipt verification')
             set_meta(db, 'scope', 'factory-first')
 
     def gap(self, lo, hi):
@@ -101,10 +101,7 @@ class StreamStore:
             for row in rows:
                 n, idx = int(row['blockNumber'], 16), int(row['logIndex'], 16)
                 header = self.headers.get(n)
-                if not header:
-                    self.gap(n, n)
-                    continue
-                if header['hash'] != row['blockHash']:
+                if header and header['hash'] != row['blockHash']:
                     self.db.execute('DELETE FROM stream_pending WHERE tx=? AND idx=?', (row['transactionHash'], idx))
                     self.gap(n, n)
                     continue
@@ -121,10 +118,10 @@ class StreamStore:
                         watches[child] = w
                         self.db.execute('INSERT OR IGNORE INTO watches VALUES (?,?,?,?)', tuple(w.values()))
                     asset = values.get('token') or watches.get(address, {}).get('asset')
-                    values['_validation'] = 'stream-header-matched'
+                    values['_validation'] = 'provider-stream-confirmed-3-heads'
                     self.db.execute('INSERT OR IGNORE INTO events VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)',
                         (row['transactionHash'], idx, n, row['blockHash'], address, kind, name, asset,
-                         row['_received_at'], int(header['timestamp'], 16), json.dumps(values), json.dumps(row), None))
+                         row['_received_at'], int(header['timestamp'], 16) if header else int(time.time()), json.dumps(values), json.dumps(row), None))
                     count += 1
                 self.db.execute('DELETE FROM stream_pending WHERE tx=? AND idx=?', (row['transactionHash'], idx))
             if get_meta(self.db, 'start') is None: set_meta(self.db, 'start', target)

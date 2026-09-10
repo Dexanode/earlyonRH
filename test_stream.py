@@ -32,15 +32,13 @@ class StoreTests(unittest.TestCase):
         self.assertEqual(read(self.path)['health']['transport'], 'websocket-logs')
         self.assertGreater(read(self.path)['health']['recovery_blocks'], 0)
 
-    def test_pending_survives_restart_and_missing_header_marks_gap(self):
+    def test_pending_survives_restart_and_commits_after_three_heads(self):
         row = make_log('pons_v2', 0, LAUNCH, V2)
         self.s.log(row)
         s = StreamStore(self.db); s.head = 5; s.connected = True
         s.flush()
-        self.assertEqual(self.db.execute('select count(*) from stream_pending').fetchone()[0], 1)
-        self.assertEqual(get_meta(self.db, 'recovery_next'), '2')
-        s.header(FakeRPC().block(2)); s.flush()
         self.assertEqual(self.db.execute('select count(*) from events').fetchone()[0], 1)
+        self.assertEqual(self.db.execute('select count(*) from stream_pending').fetchone()[0], 0)
 
     def test_removed_log_rolls_back_and_records_recovery(self):
         row = make_log('pons_v2', 0, LAUNCH, V2)

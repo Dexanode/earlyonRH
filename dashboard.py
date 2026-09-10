@@ -43,7 +43,7 @@ def read(dbpath, asset=None, offset=0):
                 health['state'] = 'recovering-history'
             health['uncovered_from'] = int(meta['uncovered_from']) if meta.get('uncovered_from') else None
             health['uncovered_to'] = int(meta['uncovered_to']) if meta.get('uncovered_to') else None
-            health['reason'] = f'Subscription event langsung; {gap:,} blok celah histori belum dipulihkan. Event dicocokkan dengan header, tanpa verifikasi receipt terpisah.'
+            health['reason'] = f'Subscription event langsung; {gap:,} blok celah reconnect belum dipulihkan. Event ditahan tiga head, tanpa verifikasi header/receipt terpisah.'
             if health['uncovered_from']:
                 health['reason'] += f' Coverage gap lama: blok {health["uncovered_from"]:,}–{health["uncovered_to"]:,}.'
             if meta.get('recovery_error'):

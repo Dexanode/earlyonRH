@@ -147,8 +147,10 @@ Dashboard tersedia pada http://127.0.0.1:8080. Listener dan dashboard memakai sc
 `listener-live` now runs `stream.py`: direct WebSocket `logs` subscriptions for
 Pons/curve/V3 signatures plus `newHeads`. Only registered factories and discovered
 children are written as candidates. Other matching signatures are discarded.
-Logs are matched to streamed block headers after three heads; they are explicitly
-labelled `stream-header-matched`, not independently receipt-verified.
+Logs are held for three observed heads and labelled
+`provider-stream-confirmed-3-heads`; they are not independently header/receipt
+verified. A streamed header hash is checked when the provider supplies that exact
+header. `removed=true` and observed replacements trigger rollback.
 
 Reconnect gaps and late-launch overlaps use a separate, paced HTTP recovery loop
 (at most one ten-block range per second; 15-second backoff on failure). The API
