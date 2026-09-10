@@ -110,7 +110,8 @@ def attribute_transactions(db, rpc, assets, limit):
     if not marks: return 0
     rows = db.execute(f'''SELECT e.tx_hash,e.asset,e.decoded FROM events e
       LEFT JOIN tx_attributions t ON t.tx_hash=e.tx_hash
-      WHERE e.asset IN ({marks}) AND e.name IN ('CurveBuy','CurveSell') AND t.tx_hash IS NULL
+      WHERE e.asset IN ({marks}) AND e.name IN ('CurveBuy','CurveSell')
+        AND (t.tx_hash IS NULL OR t.error IS NOT NULL)
       ORDER BY e.block_number DESC LIMIT ?''', (*assets, limit)).fetchall()
     for row in rows:
         actor_values = json.loads(row['decoded'])
