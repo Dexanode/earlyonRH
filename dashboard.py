@@ -88,12 +88,35 @@ def read(dbpath, asset=None, offset=0):
             if row['name']=='Initialize':
                 c['currencies']=[values.get('currency0'),values.get('currency1')]
         ranked=[]
+        analyses = {r['asset']: dict(r) for r in db.execute('SELECT * FROM asset_analysis')} if 'asset_analysis' in tables else {}
+        attribution = {}
+        if 'tx_attributions' in tables:
+            for row in db.execute("SELECT asset,sender,relation FROM tx_attributions WHERE error IS NULL"):
+                a=attribution.setdefault(row['asset'],{'senders':set(),'direct':0,'routed':0})
+                if row['sender']: a['senders'].add(row['sender'])
+                a[row['relation']] = a.get(row['relation'],0)+1
         for c in candidates.values():
             c['unique_buyers']=len(c['buyers'])
             c['repeat_buyers']=sum(v>1 for v in c['buyers'].values())
             del c['buyers']
-            ranked.append(score_candidate(c, head))
-        ranked.sort(key=lambda c:(c['score'],c['last_block']),reverse=True)
+            score_candidate(c, head)
+            c['activity_score']=c.pop('score')
+            analysis=analyses.get(c['id'])
+            a=attribution.get(c['id'],{'senders':set(),'direct':0,'routed':0})
+            c['unique_senders']=len(a['senders'])
+            c['routed_share']=round(a['routed']/max(1,a['direct']+a['routed']),2)
+            c['safety_score']=analysis['safety_score'] if analysis else None
+            c['safety_status']=analysis['safety_status'] if analysis else 'unknown'
+            c['safety_findings']=json.loads(analysis['findings']) if analysis else []
+            c['deployer']=analysis['deployer'] if analysis else None
+            c['owner']=analysis['owner'] if analysis else None
+            c['proxy']=bool(analysis and (analysis['implementation'] or analysis['proxy_admin']))
+            c['contract_analyzed_at']=analysis['analyzed_at'] if analysis else None
+            c['conviction_score']=round(.65*c['activity_score']+.35*c['safety_score']-10*c['routed_share'],1) if analysis else None
+            c['conviction_score']=max(0,min(100,c['conviction_score'])) if c['conviction_score'] is not None else None
+            c['verdict']='observe' if c['conviction_score'] is None else 'trench-candidate' if c['conviction_score']>=70 and c['safety_status']=='screened' else 'watch' if c['conviction_score']>=45 else 'avoid'
+            ranked.append(c)
+        ranked.sort(key=lambda c:(c['conviction_score'] is not None,c['conviction_score'] or c['activity_score'],c['last_block']),reverse=True)
         health['events_in_sample']=len(recent)
         health['candidates_in_sample']=len(candidates)
         health['decode_errors_in_sample']=sum(r['name']=='DecodeError' for r in recent)
@@ -106,7 +129,7 @@ def read(dbpath, asset=None, offset=0):
                 e['explorer_url']='https://robinhoodchain.blockscout.com/tx/'+e['tx_hash']
                 events.append(e)
         return {'health':health,'candidates':ranked,'events':events,'has_more':has_more,'offset':offset,'sample_limit':5000,
-                'score_model': {'version':1,'meaning':'Discovery evidence only; not a return prediction or buy recommendation.','sample':'Latest 5,000 stored events.','components':['unique buyers','repeat buyers','buy/sell event pressure','100-block activity acceleration','launch age'],'limitations':['Wallet fields may be routers/executors.','No USD liquidity, contract risk, social, or profitable-wallet history.']}}
+                'score_model': {'version':2,'meaning':'Screening evidence only; not a return prediction or buy recommendation.','sample':'Latest 5,000 stored events.','components':['activity score','budgeted sender attribution','contract screening'],'limitations':['Safety screening is not a source-code audit.','Unknown capabilities receive no safety points.','No USD liquidity, holder history, social, or profitable-wallet history.']}}
     finally: db.close()
 
 

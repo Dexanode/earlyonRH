@@ -23,6 +23,18 @@ services:
       options:
         max-size: "10m"
         max-file: "3"
+  enricher:
+    build: .
+    command: ["python", "enricher.py"]
+    env_file: .env
+    restart: unless-stopped
+    volumes:
+      - listener_data:/app/data
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
   dashboard:
     build: .
     command: ["python", "dashboard.py", "--host", "0.0.0.0", "--db", "data/live.sqlite"]

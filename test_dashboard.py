@@ -29,8 +29,9 @@ class DashboardTests(unittest.TestCase):
         self.fixture();data=read(self.path,addr(1));c=data['candidates'][0]
         self.assertEqual(c['buys'],1);self.assertEqual(c['events'],2)
         self.assertEqual(c['unique_buyers'],1);self.assertEqual(c['repeat_buyers'],0)
-        self.assertIn('activity_acceleration',c);self.assertIn('score',c)
-        self.assertEqual(data['score_model']['version'],1)
+        self.assertIn('activity_acceleration',c);self.assertIn('activity_score',c)
+        self.assertIsNone(c['conviction_score']);self.assertEqual(c['verdict'],'observe')
+        self.assertEqual(data['score_model']['version'],2)
         self.assertEqual(data['health']['state'],'healthy')
         self.assertEqual(data['events'][0]['decoded']['tokensOut'],str(10**35))
         self.assertFalse(data['has_more'])

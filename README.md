@@ -160,6 +160,23 @@ historical database and the existing live database are preserved on upgrade.
 Subscriptions still consume provider quota; this is request reduction, not an
 unlimited-free guarantee.
 
+## Budgeted wallet and contract screening
+
+`enricher` examines only the ten most active recent assets. It caches transaction
+sender attribution and refreshes contract screening after six hours. The default
+hard budget is 1,000 HTTP calls per UTC day (`ENRICHMENT_DAILY_RPC_BUDGET`). Calls
+count against the budget even when the provider fails, preventing retry storms.
+
+Screening records runtime bytecode, standard owner/getOwner and paused responses,
+total supply, deployer balance, and EIP-1967 implementation/admin storage slots.
+Unsupported methods stay unknown and earn no safety points. This does not prove
+that mint, blacklist, tax, upgrade, or transfer restrictions are safe and is not a
+source-code audit. Transaction senders are classified as direct or routed relative
+to the event actor; this is attribution evidence, not proof of independent control.
+
+Dashboard score v2 exposes activity, safety, unique sender count, routed share,
+conviction, and verdict. Conviction is absent until contract screening exists.
+
 Default Compose starts `listener-live` and points the dashboard to `data/live.sqlite`.
 On its first run the live database starts near the current head; subsequent restarts
 record downtime gaps separately while receiving current events. It scans Pons factories and
