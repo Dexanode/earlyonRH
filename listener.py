@@ -33,6 +33,10 @@ class RpcError(Exception):
     pass
 
 
+class RateLimited(RpcError):
+    pass
+
+
 class RPC:
     def __init__(self, url, attempts=3, spacing=0.25):
         if not url.startswith(('https://', 'http://')):
@@ -57,6 +61,8 @@ class RPC:
                 return result['result']
             except (OSError, ValueError, RpcError) as exc:
                 status = getattr(exc, 'code', None)
+                if status == 429:
+                    raise RateLimited(f'{method}: provider rate limit') from None
                 if attempt + 1 == self.attempts:
                     raise RpcError(f'{method} failed ({status or type(exc).__name__})') from None
                 time.sleep(min(2 ** attempt, 8))
@@ -90,7 +96,9 @@ class RPC:
                 if any('result' not in r or r.get('error') for r in rows):
                     raise RpcError('batch item failed')
                 output.extend(mapped[i]['result'] for i in range(len(group)))
-            except (OSError, ValueError, RpcError, TypeError, AttributeError):
+            except (OSError, ValueError, RpcError, TypeError, AttributeError) as exc:
+                if getattr(exc, 'code', None) == 429:
+                    raise RateLimited('batch: provider rate limit') from None
                 LOG.warning('RPC batch unavailable; falling back to individual reads')
                 self.batch_disabled = True
                 output.extend(self.parallel(group))
@@ -199,6 +207,8 @@ class Collector:
             if topics: f['topics'] = topics
             try:
                 rows = self.rpc.call('eth_getLogs', [f])
+            except RateLimited:
+                raise
             except RpcError:
                 if len(group) <= 50: raise
                 middle = len(group) // 2
@@ -310,6 +320,8 @@ class Collector:
                     self.active_chunk = min(self.chunk, self.active_chunk + 1)
                     self.successful_ranges = 0
                 return lo + span - 1 < target
+            except RateLimited:
+                raise
             except RpcError as exc:
                 if span <= 1: raise
                 span = max(1, span // 2)
@@ -386,6 +398,8 @@ async def run(args):
                 with db: set_meta(db, 'status', 'degraded'); set_meta(db, 'last_error', str(exc))
                 if args.command == 'once': raise
                 LOG.warning('%s; checkpoint retained', exc)
+                if isinstance(exc, RateLimited):
+                    await asyncio.sleep(5)
             try: await asyncio.wait_for(wake.wait(), args.poll)
             except asyncio.TimeoutError: pass
             wake.clear()

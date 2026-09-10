@@ -2,10 +2,36 @@ import io
 import json
 import unittest
 from unittest.mock import patch
-from listener import RPC
+from listener import RPC, Collector, RpcError, RateLimited
+from urllib.error import HTTPError
 
 
 class BatchTests(unittest.TestCase):
+    def test_rate_limit_does_not_fan_out_to_individual_requests(self):
+        rpc = RPC('https://example.invalid', spacing=0)
+        with patch('urllib.request.urlopen', side_effect=HTTPError('', 429, '', {}, None)), patch.object(rpc, 'parallel') as fallback:
+            with self.assertRaises(RateLimited): rpc.many([('read', [1])])
+            fallback.assert_not_called()
+        self.assertFalse(getattr(rpc, 'batch_disabled', False))
+
+    def test_large_watch_set_uses_one_filter_and_splits_on_rejection(self):
+        rpc = unittest.mock.Mock()
+        rpc.call.return_value = []
+        c = Collector(None, rpc)
+        addresses = [str(i) for i in range(647)]
+        self.assertEqual(c.logs(addresses, 1, 10), [])
+        self.assertEqual(rpc.call.call_count, 1)
+        rpc.reset_mock()
+        accepted = []
+        def respond(method, params):
+            group = params[0]['address']
+            if len(group) > 100: raise RpcError('limit')
+            accepted.extend(group)
+            return []
+        rpc.call.side_effect = respond
+        self.assertEqual(c.logs(addresses, 1, 10), [])
+        self.assertEqual(sorted(accepted), sorted(addresses))
+
     def test_parallel_reads_keep_order_and_propagate_failure(self):
         rpc = RPC('https://example.invalid', spacing=0)
         with patch.object(RPC, 'call', autospec=True, side_effect=lambda self, m, p: p[0]):
