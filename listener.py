@@ -80,7 +80,10 @@ class RPC:
             time.sleep(max(0, self.spacing - (time.monotonic() - self.last)))
             self.last = time.monotonic()
             body = json.dumps({'jsonrpc': '2.0', 'id': 1, 'method': method, 'params': params}).encode()
-            req = urllib.request.Request(self.url, data=body, headers={'Content-Type': 'application/json'})
+            req = urllib.request.Request(self.url, data=body, headers={
+                'Content-Type': 'application/json',
+                'User-Agent': 'earlyonrh/1.0',
+            })
             try:
                 with urllib.request.urlopen(req, timeout=20) as res:
                     result = json.load(res)
