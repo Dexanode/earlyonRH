@@ -11,6 +11,25 @@ from urllib.parse import urlparse, parse_qs
 STATIC = Path(__file__).parent / 'web'
 
 
+def score_candidate(c, head):
+    """Transparent 0-100 discovery score; activity evidence, not a buy signal."""
+    trades = c['buys'] + c['sells']
+    sample = min(1, trades / 10)
+    diversity = min(25, c['unique_buyers'] * 2.5)
+    repeats = min(15, c['repeat_buyers'] * 3)
+    pressure = (20 * c['buys'] / trades * sample) if trades else 0
+    baseline = c['events_previous_400'] / 4
+    acceleration = c['events_last_100'] / max(1, baseline)
+    activity = min(20, 8 * acceleration) * min(1, c['events_last_100'] / 5)
+    age_blocks = max(0, head - c['launch_block']) if head is not None and c.get('launch_block') is not None else None
+    early = 10 if age_blocks is not None and age_blocks <= 3000 else 5 if age_blocks is not None and age_blocks <= 10000 else 0
+    sell_penalty = min(15, 15 * c['sells'] / max(1, c['buys']))
+    c.update(score=round(max(0, min(100, diversity + repeats + pressure + activity + early - sell_penalty)), 1),
+             age_blocks=age_blocks, buy_sell_ratio=round(c['buys'] / max(1, c['sells']), 2),
+             activity_acceleration=round(acceleration, 2))
+    return c
+
+
 def age(value):
     if not value: return None
     try: return max(0, (dt.datetime.now(dt.timezone.utc)-dt.datetime.fromisoformat(value)).total_seconds())
@@ -49,18 +68,32 @@ def read(dbpath, asset=None, offset=0):
             if meta.get('recovery_error'):
                 health['reason'] += ' Recovery: ' + meta['recovery_error']
         recent = db.execute('SELECT asset,kind,name,decoded,block_number,observed_at,event_timestamp FROM events ORDER BY block_number DESC,log_index DESC LIMIT 5000').fetchall()
+        launches = {r['asset']: r['created_block'] for r in db.execute('SELECT asset,MIN(created_block) created_block FROM watches WHERE asset IS NOT NULL GROUP BY asset')}
         candidates = {}
         for row in recent:
             key = row['asset']
             if not key: continue
-            c = candidates.setdefault(key, {'id':key,'kind':'pool' if row['kind']=='v4' else 'token','protocol':row['kind'],'events':0,'buys':0,'sells':0,'liquidity_changes':0,'last_block':row['block_number'],'last_seen':row['observed_at'],'first_seen_in_sample':row['observed_at'],'latest_event':row['name'],'currencies':[]})
+            c = candidates.setdefault(key, {'id':key,'kind':'pool' if row['kind']=='v4' else 'token','protocol':row['kind'],'events':0,'buys':0,'sells':0,'liquidity_changes':0,'last_block':row['block_number'],'last_seen':row['observed_at'],'first_seen_in_sample':row['observed_at'],'latest_event':row['name'],'currencies':[],'buyers':{},'events_last_100':0,'events_previous_400':0,'launch_block':launches.get(key)})
             c['events'] += 1
             c['first_seen_in_sample'] = min(c['first_seen_in_sample'],row['observed_at'])
             c['buys'] += row['name']=='CurveBuy'
             c['sells'] += row['name']=='CurveSell'
             c['liquidity_changes'] += row['name']=='ModifyLiquidity'
+            if head is not None:
+                c['events_last_100'] += row['block_number'] > head-100
+                c['events_previous_400'] += head-500 < row['block_number'] <= head-100
+            values=json.loads(row['decoded'])
+            buyer=values.get('buyer') if row['name']=='CurveBuy' else None
+            if buyer: c['buyers'][buyer]=c['buyers'].get(buyer,0)+1
             if row['name']=='Initialize':
-                v=json.loads(row['decoded']); c['currencies']=[v.get('currency0'),v.get('currency1')]
+                c['currencies']=[values.get('currency0'),values.get('currency1')]
+        ranked=[]
+        for c in candidates.values():
+            c['unique_buyers']=len(c['buyers'])
+            c['repeat_buyers']=sum(v>1 for v in c['buyers'].values())
+            del c['buyers']
+            ranked.append(score_candidate(c, head))
+        ranked.sort(key=lambda c:(c['score'],c['last_block']),reverse=True)
         health['events_in_sample']=len(recent)
         health['candidates_in_sample']=len(candidates)
         health['decode_errors_in_sample']=sum(r['name']=='DecodeError' for r in recent)
@@ -72,7 +105,8 @@ def read(dbpath, asset=None, offset=0):
                 e=dict(row);e['decoded']=json.loads(e['decoded']);e.pop('raw')
                 e['explorer_url']='https://robinhoodchain.blockscout.com/tx/'+e['tx_hash']
                 events.append(e)
-        return {'health':health,'candidates':list(candidates.values()),'events':events,'has_more':has_more,'offset':offset,'sample_limit':5000}
+        return {'health':health,'candidates':ranked,'events':events,'has_more':has_more,'offset':offset,'sample_limit':5000,
+                'score_model': {'version':1,'meaning':'Discovery evidence only; not a return prediction or buy recommendation.','sample':'Latest 5,000 stored events.','components':['unique buyers','repeat buyers','buy/sell event pressure','100-block activity acceleration','launch age'],'limitations':['Wallet fields may be routers/executors.','No USD liquidity, contract risk, social, or profitable-wallet history.']}}
     finally: db.close()
 
 

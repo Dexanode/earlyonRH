@@ -6,11 +6,16 @@ from http.server import ThreadingHTTPServer
 import unittest
 import urllib.request
 import urllib.error
-from dashboard import read, handler
+from dashboard import read, handler, score_candidate
 from listener import database, Collector, set_meta, now
 from test_listener import FakeRPC, make_log, LAUNCH, BUY, V2, addr
 
 class DashboardTests(unittest.TestCase):
+    def test_score_rewards_diversity_repeats_and_acceleration(self):
+        base=dict(buys=10,sells=2,unique_buyers=2,repeat_buyers=1,events_last_100=2,events_previous_400=16,launch_block=900)
+        stronger=dict(base,unique_buyers=8,repeat_buyers=4,events_last_100=12)
+        self.assertGreater(score_candidate(stronger,1000)['score'],score_candidate(base,1000)['score'])
+        self.assertLessEqual(score_candidate(stronger,1000)['score'],100)
     def setUp(self):
         self.tmp=tempfile.TemporaryDirectory();self.path=Path(self.tmp.name)/'data.sqlite'
     def tearDown(self): self.tmp.cleanup()
@@ -23,6 +28,9 @@ class DashboardTests(unittest.TestCase):
     def test_live_aggregation_and_detail(self):
         self.fixture();data=read(self.path,addr(1));c=data['candidates'][0]
         self.assertEqual(c['buys'],1);self.assertEqual(c['events'],2)
+        self.assertEqual(c['unique_buyers'],1);self.assertEqual(c['repeat_buyers'],0)
+        self.assertIn('activity_acceleration',c);self.assertIn('score',c)
+        self.assertEqual(data['score_model']['version'],1)
         self.assertEqual(data['health']['state'],'healthy')
         self.assertEqual(data['events'][0]['decoded']['tokensOut'],str(10**35))
         self.assertFalse(data['has_more'])
