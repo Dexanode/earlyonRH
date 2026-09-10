@@ -16,6 +16,7 @@ from listener import CHAIN, REGISTRY, RPC, RpcError, database, get_meta, set_met
 LOG = logging.getLogger('stream')
 FACTORIES = {a: k for a, k in REGISTRY.items() if k.startswith('pons_')}
 TOPICS = list(dict.fromkeys(s['topic'] for k in ('pons_v1', 'pons_v2', 'curve', 'v3_pool') for s in SPECS[k]))
+MAX_AUTO_RECOVERY = 100
 
 
 class StreamStore:
@@ -33,10 +34,18 @@ class StreamStore:
 
     def gap(self, lo, hi):
         if hi < lo: return
+        if hi - lo + 1 > MAX_AUTO_RECOVERY:
+            set_meta(self.db, 'uncovered_from', lo)
+            set_meta(self.db, 'uncovered_to', hi - MAX_AUTO_RECOVERY)
+            lo = hi - MAX_AUTO_RECOVERY + 1
         oldlo = get_meta(self.db, 'recovery_next')
         oldhi = get_meta(self.db, 'recovery_target')
         if oldlo and oldhi and int(oldlo) <= int(oldhi):
             lo, hi = min(lo, int(oldlo)), max(hi, int(oldhi))
+            if hi - lo + 1 > MAX_AUTO_RECOVERY:
+                set_meta(self.db, 'uncovered_from', lo)
+                set_meta(self.db, 'uncovered_to', hi - MAX_AUTO_RECOVERY)
+                lo = hi - MAX_AUTO_RECOVERY + 1
         set_meta(self.db, 'recovery_next', lo)
         set_meta(self.db, 'recovery_target', hi)
 
@@ -122,6 +131,7 @@ class StreamStore:
             set_meta(self.db, 'heartbeat', now())
             set_meta(self.db, 'last_success', now())
             set_meta(self.db, 'status', 'healthy' if self.connected else 'degraded')
+            if self.connected: set_meta(self.db, 'last_error', '')
             set_meta(self.db, 'chain', CHAIN)
         if count: LOG.info('stream committed %s relevant logs; head=%s', count, self.head)
 

@@ -40,8 +40,12 @@ def read(dbpath, asset=None, offset=0):
             gap = max(0, int(meta.get('recovery_target', '0')) - int(meta.get('recovery_next', '1')) + 1)
             health.update(transport='websocket-logs', recovery_blocks=gap, validation=meta.get('validation'))
             if state == 'healthy' and gap:
-                health['state'] = 'catching-up'
+                health['state'] = 'recovering-history'
+            health['uncovered_from'] = int(meta['uncovered_from']) if meta.get('uncovered_from') else None
+            health['uncovered_to'] = int(meta['uncovered_to']) if meta.get('uncovered_to') else None
             health['reason'] = f'Subscription event langsung; {gap:,} blok celah histori belum dipulihkan. Event dicocokkan dengan header, tanpa verifikasi receipt terpisah.'
+            if health['uncovered_from']:
+                health['reason'] += f' Coverage gap lama: blok {health["uncovered_from"]:,}–{health["uncovered_to"]:,}.'
             if meta.get('recovery_error'):
                 health['reason'] += ' Recovery: ' + meta['recovery_error']
         recent = db.execute('SELECT asset,kind,name,decoded,block_number,observed_at,event_timestamp FROM events ORDER BY block_number DESC,log_index DESC LIMIT 5000').fetchall()

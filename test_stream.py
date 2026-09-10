@@ -50,6 +50,13 @@ class StoreTests(unittest.TestCase):
         self.assertEqual(self.db.execute('select count(*) from watches').fetchone()[0], 0)
         self.assertIsNotNone(get_meta(self.db, 'last_reorg'))
 
+    def test_large_gap_is_recorded_but_only_recent_tail_is_recovered(self):
+        with self.db: self.s.gap(100, 1000)
+        self.assertEqual(get_meta(self.db, 'uncovered_from'), '100')
+        self.assertEqual(get_meta(self.db, 'uncovered_to'), '900')
+        self.assertEqual(get_meta(self.db, 'recovery_next'), '901')
+        self.assertEqual(get_meta(self.db, 'recovery_target'), '1000')
+
     def test_replacement_header_rolls_back(self):
         row = make_log('pons_v2', 0, LAUNCH, V2)
         self.s.log(row); self.s.flush()
