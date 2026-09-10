@@ -144,12 +144,25 @@ Dashboard tersedia pada http://127.0.0.1:8080. Listener dan dashboard memakai sc
 
 ## Live radar and preserved history
 
+`listener-live` now runs `stream.py`: direct WebSocket `logs` subscriptions for
+Pons/curve/V3 signatures plus `newHeads`. Only registered factories and discovered
+children are written as candidates. Other matching signatures are discarded.
+Logs are matched to streamed block headers after three heads; they are explicitly
+labelled `stream-header-matched`, not independently receipt-verified.
+
+Reconnect gaps and late-launch overlaps use a separate, paced HTTP recovery loop
+(at most one ten-block range per second; 15-second backoff on failure). The API
+reports `recovery_blocks` independently of live head lag. Rate limits in recovery
+do not stop live subscriptions. Pending logs survive process restarts. The
+historical database and the existing live database are preserved on upgrade.
+Subscriptions still consume provider quota; this is request reduction, not an
+unlimited-free guarantee.
+
 Default Compose starts `listener-live` and points the dashboard to `data/live.sqlite`.
 On its first run the live database starts near the current head; subsequent restarts
-resume its saved cursor and recover downtime gaps. It scans Pons factories and
+record downtime gaps separately while receiving current events. It scans Pons factories and
 their discovered curve/V3 children. Global V4 swaps, pre-start launches, and NFT
-marketplaces are not included in this live scope. It uses HTTP log validation with
-WebSocket head notifications, not a direct log subscription.
+marketplaces are not included in this live scope.
 
 The old `data/listener.sqlite` stays intact. Historical collection is opt-in via
 the `history` profile and should remain stopped when sharing a constrained RPC.

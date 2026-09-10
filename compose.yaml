@@ -13,7 +13,7 @@ services:
         max-file: "3"
   listener-live:
     build: .
-    command: ["python", "listener.py", "run", "--db", "data/live.sqlite", "--factory-first"]
+    command: ["python", "stream.py"]
     env_file: .env
     restart: unless-stopped
     volumes:

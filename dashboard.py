@@ -36,6 +36,14 @@ def read(dbpath, asset=None, offset=0):
         safe = {k:meta.get(k) for k in ('status','cursor','head','start','last_success','heartbeat','last_reorg','last_error')}
         health = dict(safe, state=state, age_seconds=freshness, lag_blocks=max(0,head-cursor) if head is not None and cursor is not None else None,
                       reason='Menunggu checkpoint pertama.' if freshness is None else '', chain_id=4663)
+        if meta.get('transport') == 'websocket-logs':
+            gap = max(0, int(meta.get('recovery_target', '0')) - int(meta.get('recovery_next', '1')) + 1)
+            health.update(transport='websocket-logs', recovery_blocks=gap, validation=meta.get('validation'))
+            if state == 'healthy' and gap:
+                health['state'] = 'catching-up'
+            health['reason'] = f'Subscription event langsung; {gap:,} blok celah histori belum dipulihkan. Event dicocokkan dengan header, tanpa verifikasi receipt terpisah.'
+            if meta.get('recovery_error'):
+                health['reason'] += ' Recovery: ' + meta['recovery_error']
         recent = db.execute('SELECT asset,kind,name,decoded,block_number,observed_at,event_timestamp FROM events ORDER BY block_number DESC,log_index DESC LIMIT 5000').fetchall()
         candidates = {}
         for row in recent:
