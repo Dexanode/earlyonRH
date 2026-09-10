@@ -11,6 +11,7 @@ import sqlite3
 import time
 import urllib.error
 import urllib.request
+from concurrent.futures import ThreadPoolExecutor
 
 from events import SPECS, decode
 
@@ -72,7 +73,7 @@ class RPC:
         for offset in range(0, len(calls), 50):
             group = calls[offset:offset + 50]
             if getattr(self, 'batch_disabled', False):
-                output.extend(self.call(m, p) for m, p in group)
+                output.extend(self.parallel(group))
                 continue
             time.sleep(max(0, self.spacing - (time.monotonic() - self.last)))
             self.last = time.monotonic()
@@ -92,8 +93,15 @@ class RPC:
             except (OSError, ValueError, RpcError, TypeError, AttributeError):
                 LOG.warning('RPC batch unavailable; falling back to individual reads')
                 self.batch_disabled = True
-                output.extend(self.call(m, p) for m, p in group)
+                output.extend(self.parallel(group))
         return output
+
+    def parallel(self, calls):
+        # Each worker has its own timing state. Only the collector writes SQLite.
+        def read(item):
+            return RPC(self.url, self.attempts, self.spacing).call(*item)
+        with ThreadPoolExecutor(max_workers=4) as pool:
+            return list(pool.map(read, calls))
 
 
 def database(path):
@@ -203,6 +211,7 @@ class Collector:
             headers = dict(zip(heights, blocks))
         else:
             headers = {n: self.rpc.block(n) for n in heights}
+        headers_done = time.monotonic()
         parent = self.db.execute('SELECT hash FROM blocks WHERE number=?', (lo - 1,)).fetchone()[0]
         for n, b in headers.items():
             if b['parentHash'] != parent: raise RpcError('chain changed during block read')
@@ -226,11 +235,13 @@ class Collector:
             rows.extend(self.logs(list(watches), lo, hi))
         unique = {(r['transactionHash'], int(r['logIndex'], 16)): r for r in rows}
         if len(unique) > self.max_logs: raise RpcError('too many combined logs; reduce chunk')
+        logs_done = time.monotonic()
         transactions = list(dict.fromkeys(r['transactionHash'] for r in unique.values()))
         receipts = dict(zip(transactions, self.rpc.many([
             ('eth_getTransactionReceipt', [tx]) for tx in transactions
         ]))) if hasattr(self.rpc, 'many') else {}
         prepared = []
+        receipts_done = time.monotonic()
         for key, row in sorted(unique.items(), key=lambda x: (int(x[1]['blockNumber'], 16), x[0][1])):
             n = int(row['blockNumber'], 16)
             if n not in headers or row['blockHash'] != headers[n]['hash'] or row.get('removed'):
@@ -267,6 +278,7 @@ class Collector:
             set_meta(self.db, 'status', 'healthy')
         LOG.info('committed blocks %s-%s events=%s child_watches=%s', lo, hi, len(prepared), len(watches))
         LOG.info('range throughput %.2f blocks/sec', (hi - lo + 1) / max(time.monotonic() - started, 0.001))
+        LOG.info('RPC timing headers=%.2fs logs=%.2fs receipts=%.2fs commit=%.2fs', headers_done-started, logs_done-headers_done, receipts_done-logs_done, time.monotonic()-receipts_done)
         return len(prepared)
 
     def tick(self):

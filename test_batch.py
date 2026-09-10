@@ -6,6 +6,13 @@ from listener import RPC
 
 
 class BatchTests(unittest.TestCase):
+    def test_parallel_reads_keep_order_and_propagate_failure(self):
+        rpc = RPC('https://example.invalid', spacing=0)
+        with patch.object(RPC, 'call', autospec=True, side_effect=lambda self, m, p: p[0]):
+            self.assertEqual(rpc.parallel([('read', [i]) for i in range(20)]), list(range(20)))
+        with patch.object(RPC, 'call', side_effect=RuntimeError('failed')):
+            with self.assertRaises(RuntimeError): rpc.parallel([('read', [1])])
+
     def test_reordered_response_and_bounded_requests(self):
         sizes = []
         def respond(req, timeout):
@@ -21,7 +28,7 @@ class BatchTests(unittest.TestCase):
 
     def test_duplicate_ids_fall_back_without_using_bad_results(self):
         rpc = RPC('https://example.invalid', spacing=0)
-        with patch('urllib.request.urlopen', return_value=io.BytesIO(b'[{"id":0,"result":99},{"id":0,"result":99}]')), patch.object(rpc, 'call', side_effect=[1, 2]) as call:
+        with patch('urllib.request.urlopen', return_value=io.BytesIO(b'[{"id":0,"result":99},{"id":0,"result":99}]')), patch.object(rpc, 'parallel', return_value=[1, 2]) as call:
             self.assertEqual(rpc.many([('read', [1]), ('read', [2])]), [1, 2])
-            self.assertEqual(call.call_count, 2)
+            self.assertEqual(call.call_count, 1)
         self.assertTrue(rpc.batch_disabled)
