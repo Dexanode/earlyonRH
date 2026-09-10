@@ -10,5 +10,18 @@ services:
       options:
         max-size: "10m"
         max-file: "3"
+  dashboard:
+    build: .
+    command: ["python", "dashboard.py", "--host", "0.0.0.0"]
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:8080:8080"
+    volumes:
+      - listener_data:/app/data:ro
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
 volumes:
   listener_data:

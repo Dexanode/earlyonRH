@@ -1,6 +1,6 @@
 # earlyonRH — Robinhood Onchain Listener
 
-Prototype read-only untuk chain 4663. Menemukan event Pons V1/V2 dan Uniswap V4 langsung dari RPC, menyimpan receipt dan timeline ke SQLite. WebSocket `newHeads` membangunkan collector; `eth_getLogs` mengambil rentang lengkap dan menangani recovery. Ini belum dashboard, trading bot, atau klaim keunggulan latency.
+Prototype read-only untuk chain 4663, dengan dashboard radar, detail kandidat, dan data health. Listener menemukan event Pons V1/V2 dan Uniswap V4 langsung dari RPC, menyimpan receipt dan timeline ke SQLite. WebSocket `newHeads` membangunkan collector; `eth_getLogs` mengambil rentang lengkap dan menangani recovery. Ini bukan trading bot atau klaim keunggulan latency.
 
 ## Jalankan lokal / VPS
 
@@ -35,7 +35,7 @@ Angka block di atas hanya contoh input, bukan deployment block resmi. Pilih bloc
 .venv/bin/python -m unittest -v
 ```
 
-Database default `data/listener.sqlite` berisi events, receipts, watches, validations, blocks, serta meta/status/cursor. JSON export menampilkan decoded fields, raw logs, timestamps dan link transaksi explorer. Nilai uint/int menjadi string agar tidak kehilangan presisi di JavaScript. V4 menggunakan PoolId 32 byte; tidak dianggap token address. Export belum melakukan penggabungan relasi V4 pool ke token pada UI.
+Database default `data/listener.sqlite` berisi events, receipts, watches, validations, blocks, serta meta/status/cursor. JSON export menampilkan decoded fields, raw logs, timestamps dan link transaksi explorer. Nilai uint/int menjadi string agar tidak kehilangan presisi di JavaScript. V4 menggunakan PoolId 32 byte; tidak dianggap token address. Radar menampilkan V4 sebagai PoolId; penggabungan pool-token lintas protokol belum tersedia.
 
 `observed_at` adalah waktu respons log diterima collector, bukan waktu pertama publikasi onchain. `event_timestamp` berasal dari block. Data backfill tidak membuktikan bahwa collector lebih cepat dari screener.
 
@@ -71,7 +71,7 @@ docker compose logs -f --tail=50 listener
 docker compose exec listener python listener.py export
 ```
 
-SQLite berada di named volume `listener_data`. Backup volume/database dan pantau pertumbuhan disk. Jangan jalankan dua writer untuk database yang sama. Container tidak mengekspos port. Dockerfile/Compose disediakan untuk deployment berikutnya; pengujian utama dilakukan pada Python lokal, bukan Docker/VPS.
+SQLite berada di named volume `listener_data`. Backup volume/database dan pantau pertumbuhan disk. Jangan jalankan dua writer untuk database yang sama. Dashboard hanya membuka port pada loopback VPS (127.0.0.1:8080). Dockerfile/Compose disediakan untuk deployment berikutnya; pengujian utama dilakukan pada Python lokal, bukan Docker/VPS.
 
 ## Validasi source
 
@@ -107,3 +107,36 @@ docker compose logs --tail=50 listener
 ```
 
 File `.env` tidak dilacak Git dan data SQLite berada di named volume Docker. Jangan gunakan `docker compose down -v` jika ingin mempertahankan data. Jika update mengubah registry/decoder, ikuti instruksi replay dengan database baru; jangan menghapus database lama secara otomatis.
+
+
+## Dashboard: radar, detail kandidat, data health
+
+Setelah `git pull --ff-only` dan `docker compose up --build -d`, service `dashboard` membaca SQLite listener dari volume yang sama dalam mode read-only. Tidak membutuhkan API key dan tidak menulis transaksi. Database kosong tampil sebagai waiting; tidak ada data demo otomatis.
+
+Dari laptop, buka SSH tunnel (ganti USER dan IP_VPS):
+
+```sh
+ssh -N -L 8080:127.0.0.1:8080 USER@IP_VPS
+```
+
+Buka http://localhost:8080 di browser laptop. Jika port laptop terpakai, ganti bagian pertama menjadi `8081` dan buka http://localhost:8081. Jangan ubah binding menjadi port publik tanpa autentikasi/reverse proxy yang sesuai; dashboard ini dirancang untuk akses pribadi lewat tunnel.
+
+Pemeriksaan di VPS:
+
+```sh
+docker compose ps
+docker compose logs --tail=50 listener dashboard
+curl http://127.0.0.1:8080/api/radar
+```
+
+Radar menampilkan maksimum 5.000 event terbaru, dikelompokkan menurut token Pons atau PoolId V4. Search/filter bekerja dalam sampel ini; angka bukan total sepanjang sejarah. Klik alamat untuk membuka detail dan link transaksi. Detail menampilkan 100 event per halaman. Buy/sell yang terhitung adalah event CurveBuy/CurveSell; swap DEX tidak ditebak sebagai pembelian tanpa atribusi.
+
+Data Health menampilkan heartbeat, checkpoint, head terakhir, jarak block, commit terakhir, reorg, dan error historis. Lebih dari 60 detik tanpa heartbeat ditandai stale; jarak lebih dari 100 block ditandai catching-up. Ambang ini indikator operasional, bukan finality atau pengukuran laba. Auto-refresh setiap 10 detik saat tab aktif. Jika API gagal, data terakhir tetap terlihat dengan label koneksi terputus.
+
+Jalankan tanpa Docker:
+
+```sh
+.venv/bin/python dashboard.py --db data/listener.sqlite
+```
+
+Dashboard tersedia pada http://127.0.0.1:8080. Listener dan dashboard memakai schema yang sama; update ini tidak mengubah fingerprint ABI sehingga database lama tetap dapat digunakan. Index tambahan dibuat otomatis oleh listener untuk query radar.

@@ -4,7 +4,7 @@ Tanggal: 10 September 2026.
 
 ## Hasil
 
-Suite Python lokal: **15 tests passed**, Python 3.13.5, websockets 15.0.1, pycryptodome 3.23.0.
+Suite Python lokal terbaru: **20 tests passed**, Python 3.13.5, websockets 15.0.1, pycryptodome 3.23.0.
 
 Cakupan tes:
 
@@ -29,6 +29,13 @@ Berikut masih belum terverifikasi: receipt event mainnet yang didekode end-to-en
 
 ## Batas fungsi
 
-Prototype menyediakan event timeline dan persistence. Belum ada dashboard web, NFT/o1 adapter, classification smart wallet, conviction score, quote exit, USD valuation, atau eksekusi transaksi. File `example-timeline.json` adalah **fixture sintetis** dengan hash transaksi placeholder; bukan market data.
+Prototype menyediakan event timeline dan persistence. Dashboard web radar, detail kandidat, dan data health sudah tersedia. Belum ada NFT/o1 adapter, classification smart wallet, conviction score, quote exit, USD valuation, atau eksekusi transaksi. File `example-timeline.json` adalah **fixture sintetis** dengan hash transaksi placeholder; bukan market data.
 
 Pons source ABI dicocokkan dengan commit yang dicantumkan dalam README dan source-manifest. Daftar tiga alamat tetap perlu validasi deployment pada RPC yang stabil. Startup hanya memeriksa chain, keberadaan bytecode dan perubahan hash dibanding startup sebelumnya.
+
+
+## Dashboard validation
+
+Lima tes tambahan lulus: database belum ada tidak dibuat oleh reader; agregasi radar dan detail mempertahankan presisi; stale/degraded dibedakan; pembacaan tidak mengubah meta; HTTP melayani halaman/API serta menolak path `.env` dan query invalid. Semua route diperiksa dengan server HTTP localhost. JavaScript lulus `node --check`; preview root merespons HTTP 200.
+
+Tidak dilakukan pengujian visual/interaksi browser. Docker/VPS pengguna belum diakses langsung. Preview lokal menggunakan empty state; fixtures tes terpisah dari data live. Dashboard tidak mengeksekusi transaksi dan tidak memiliki akses API key listener.

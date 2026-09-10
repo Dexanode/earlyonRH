@@ -82,6 +82,7 @@ def database(path):
         decoded TEXT,raw TEXT,decode_error TEXT,
         PRIMARY KEY(tx_hash,log_index));
       CREATE INDEX IF NOT EXISTS events_asset ON events(asset,block_number);
+      CREATE INDEX IF NOT EXISTS events_recent ON events(block_number DESC,log_index DESC);
       CREATE TABLE IF NOT EXISTS receipts(tx_hash TEXT PRIMARY KEY,block_number INTEGER,body TEXT);
       CREATE TABLE IF NOT EXISTS validations(address TEXT PRIMARY KEY,checked_at TEXT,code_sha256 TEXT,bytes INTEGER);
     ''')
@@ -225,10 +226,15 @@ class Collector:
         return len(prepared)
 
     def tick(self):
+        with self.db: set_meta(self.db, 'heartbeat', now())
         self.reconcile()
-        target = int(self.rpc.call('eth_blockNumber', []), 16) - self.confirmations
+        head = int(self.rpc.call('eth_blockNumber', []), 16)
+        with self.db: set_meta(self.db, 'head', head)
+        target = head - self.confirmations
         lo = int(get_meta(self.db, 'cursor')) + 1
-        if lo > target: return False
+        if lo > target:
+            with self.db: set_meta(self.db, 'status', 'healthy')
+            return False
         span = min(self.chunk, target - lo + 1)
         while True:
             try:
@@ -287,7 +293,11 @@ async def run(args):
     c = Collector(db, rpc, args.start_block, args.confirmations, args.chunk)
     try:
         await asyncio.to_thread(c.setup)
-    except Exception:
+    except Exception as exc:
+        with db:
+            set_meta(db, 'status', 'degraded')
+            set_meta(db, 'heartbeat', now())
+            set_meta(db, 'last_error', str(exc) if isinstance(exc, (RpcError, ValueError)) else type(exc).__name__)
         db.close()
         raise
     wake = asyncio.Event()
