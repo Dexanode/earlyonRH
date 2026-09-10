@@ -1,6 +1,19 @@
 services:
   listener:
+    profiles: [history]
     build: .
+    env_file: .env
+    restart: unless-stopped
+    volumes:
+      - listener_data:/app/data
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+  listener-live:
+    build: .
+    command: ["python", "listener.py", "run", "--db", "data/live.sqlite", "--factory-first"]
     env_file: .env
     restart: unless-stopped
     volumes:
@@ -12,7 +25,7 @@ services:
         max-file: "3"
   dashboard:
     build: .
-    command: ["python", "dashboard.py", "--host", "0.0.0.0"]
+    command: ["python", "dashboard.py", "--host", "0.0.0.0", "--db", "data/live.sqlite"]
     restart: unless-stopped
     ports:
       - "127.0.0.1:8080:8080"

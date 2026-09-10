@@ -144,22 +144,28 @@ def set_meta(db, key, value):
 
 
 class Collector:
-    def __init__(self, db, rpc, start=None, confirmations=2, chunk=10, max_logs=500, max_reorg=64):
+    def __init__(self, db, rpc, start=None, confirmations=2, chunk=10, max_logs=500, max_reorg=64, factory_first=False):
         self.db, self.rpc, self.start = db, rpc, start
         self.confirmations, self.chunk = confirmations, chunk
         self.max_logs, self.max_reorg = max_logs, max_reorg
         self.active_chunk = chunk
         self.successful_ranges = 0
+        self.factory_first = factory_first
+        self.registry = {a: k for a, k in REGISTRY.items() if not factory_first or k != 'v4'}
 
     def setup(self):
         if int(self.rpc.call('eth_chainId', []), 16) != CHAIN:
             raise RpcError('wrong chain; expected 4663')
         if get_meta(self.db, 'chain') not in (None, str(CHAIN)):
             raise RpcError('database belongs to another chain')
+        scope = 'factory-first' if self.factory_first else 'all-registry'
+        previous_scope = get_meta(self.db, 'scope') or ('all-registry' if get_meta(self.db, 'cursor') else scope)
+        if previous_scope != scope:
+            raise RpcError('scan scope changed; use a separate database')
         fingerprint = hashlib.sha256(json.dumps({'registry': REGISTRY, 'specs': SPECS}, sort_keys=True).encode()).hexdigest()
         if get_meta(self.db, 'decoder_fingerprint') not in (None, fingerprint):
             raise RpcError('registry/decoder changed; replay into a new database')
-        for address in REGISTRY:
+        for address in self.registry:
             code = self.rpc.call('eth_getCode', [address, 'latest'])
             raw = bytes.fromhex(code.removeprefix('0x'))
             if not raw: raise RpcError(f'no bytecode at registry address {address}')
@@ -170,6 +176,7 @@ class Collector:
             self.db.execute('INSERT OR REPLACE INTO validations VALUES (?,?,?,?)', (address, now(), digest, len(raw)))
         with self.db:
             set_meta(self.db, 'chain', CHAIN)
+            set_meta(self.db, 'scope', scope)
             set_meta(self.db, 'decoder_fingerprint', fingerprint)
             if get_meta(self.db, 'cursor') is None:
                 height = self.start
@@ -237,7 +244,7 @@ class Collector:
             if b['parentHash'] != parent: raise RpcError('chain changed during block read')
             parent = b['hash']
         # Fetch factory events before their children, including same-block curve buys.
-        rows = self.logs(list(REGISTRY), lo, hi)
+        rows = self.logs(list(self.registry), lo, hi)
         watches = {r['address']: dict(r) for r in self.db.execute('SELECT * FROM watches')}
         discoveries = []
         for row in rows:
@@ -375,7 +382,7 @@ async def run(args):
     url = os.environ.get('RPC_HTTP_URL')
     if not url: raise ValueError('Set RPC_HTTP_URL in the environment')
     rpc = RPC(url, spacing=args.request_spacing)
-    c = Collector(db, rpc, args.start_block, args.confirmations, args.chunk)
+    c = Collector(db, rpc, args.start_block, args.confirmations, args.chunk, factory_first=args.factory_first)
     try:
         await asyncio.to_thread(c.setup)
     except Exception as exc:
@@ -415,6 +422,7 @@ def main():
     p.add_argument('command', choices=['run', 'once', 'export'])
     p.add_argument('--db', default='data/listener.sqlite')
     p.add_argument('--start-block', type=int)
+    p.add_argument('--factory-first', action='store_true', help='Only factory launches and their discovered child contracts; separate database required')
     p.add_argument('--confirmations', type=int, default=2)
     p.add_argument('--chunk', type=int, default=10)
     p.add_argument('--poll', type=float, default=2)

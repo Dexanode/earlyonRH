@@ -142,6 +142,22 @@ Jalankan tanpa Docker:
 Dashboard tersedia pada http://127.0.0.1:8080. Listener dan dashboard memakai schema yang sama; update ini tidak mengubah fingerprint ABI sehingga database lama tetap dapat digunakan. Index tambahan dibuat otomatis oleh listener untuk query radar.
 # Catch-up performance
 
+## Live radar and preserved history
+
+Default Compose starts `listener-live` and points the dashboard to `data/live.sqlite`.
+On its first run the live database starts near the current head; subsequent restarts
+resume its saved cursor and recover downtime gaps. It scans Pons factories and
+their discovered curve/V3 children. Global V4 swaps, pre-start launches, and NFT
+marketplaces are not included in this live scope. It uses HTTP log validation with
+WebSocket head notifications, not a direct log subscription.
+
+The old `data/listener.sqlite` stays intact. Historical collection is opt-in via
+the `history` profile and should remain stopped when sharing a constrained RPC.
+For migration, run `docker compose stop listener` before
+`docker compose up --build -d listener-live dashboard`. Do not remove the volume.
+Historical and live records are intentionally separate; neither represents full
+chain or wallet history. No scoring should assume complete historical coverage.
+
 The collector batches block headers and transaction receipts, and scans the full
 watch list in one log filter (splitting only when rejected). Defaults retain the
 provider-compatible ten-block log range and 50 ms request spacing. HTTP 429 causes

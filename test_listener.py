@@ -52,6 +52,25 @@ class FakeRPC:
 
 
 class Tests(unittest.TestCase):
+    def test_live_starts_near_head_and_resumes_without_reset(self):
+        rpc = FakeRPC()
+        c = Collector(self.db, rpc, factory_first=True)
+        c.setup()
+        self.assertEqual(get_meta(self.db, 'start'), '2')
+        self.assertNotIn('v4', c.registry.values())
+        c.tick()
+        cursor = get_meta(self.db, 'cursor')
+        Collector(self.db, rpc, factory_first=True).setup()
+        self.assertEqual(get_meta(self.db, 'cursor'), cursor)
+        with self.assertRaises(RpcError): Collector(self.db, rpc).setup()
+
+    def test_live_same_block_launch_and_buy(self):
+        launch = make_log('pons_v2', 0, LAUNCH, V2)
+        buy = make_log('curve', 0, BUY, addr(2)); buy['logIndex'] = '0x1'
+        c = Collector(self.db, FakeRPC([launch, buy]), factory_first=True)
+        c.setup(); c.tick()
+        self.assertEqual(self.db.execute('SELECT count(*) FROM events').fetchone()[0], 2)
+
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.db = database(Path(self.tmp.name)/'test.sqlite')
