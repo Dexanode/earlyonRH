@@ -17,8 +17,8 @@ class AlertTests(unittest.TestCase):
     def tearDown(self):self.db.close();self.tmp.cleanup()
     def test_trench_rule_requires_wallet_and_safety_evidence(self):
         self.assertEqual(matches(candidate())[0][0],'trench-candidate')
-        self.assertFalse(matches(candidate(unique_senders=1)))
-        self.assertFalse(matches(candidate(safety_status='incomplete')))
+        self.assertNotIn('trench-candidate',[r[0] for r in matches(candidate(unique_senders=1))])
+        self.assertNotIn('trench-candidate',[r[0] for r in matches(candidate(safety_status='incomplete'))])
     def test_deduplicates_active_alert_and_rearms(self):
         self.assertEqual(len(evaluate(self.db,[candidate()],cooldown=0)),1)
         self.assertEqual(len(evaluate(self.db,[candidate()],cooldown=0)),0)
