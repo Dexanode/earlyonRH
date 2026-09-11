@@ -104,6 +104,7 @@ def read(dbpath, asset=None, offset=0):
         cluster_signal={}
         if 'wallet_clusters' in tables:
             cluster_signal={r['asset']:dict(r) for r in db.execute('SELECT asset,COUNT(*) cluster_count,MAX(members) cluster_members FROM wallet_clusters GROUP BY asset')}
+        markets={r['asset']:dict(r) for r in db.execute('SELECT * FROM market_snapshots')} if 'market_snapshots' in tables else {}
         for c in candidates.values():
             c['unique_buyers']=len(c['buyers'])
             c['repeat_buyers']=sum(v>1 for v in c['buyers'].values())
@@ -117,6 +118,9 @@ def read(dbpath, asset=None, offset=0):
             ws=wallet_signal.get(c['id'],{});cl=cluster_signal.get(c['id'],{})
             c['smart_wallets']=ws.get('smart_wallets',0);c['best_wallet_score']=ws.get('best_wallet_score')
             c['cluster_count']=cl.get('cluster_count',0);c['cluster_members']=cl.get('cluster_members',0)
+            market=markets.get(c['id'],{})
+            for key in ('symbol','name','quote_symbol','price_quote','price_usd','market_cap_quote','market_cap_usd','liquidity_quote','liquidity_usd','volume_5m_quote','volume_1h_quote','volume_24h_quote','change_5m','change_1h','change_6h','change_24h','source','status'):
+                c['market_'+key if key in ('source','status') else key]=market.get(key)
             c['safety_score']=analysis['safety_score'] if analysis else None
             c['safety_status']=analysis['safety_status'] if analysis else 'unknown'
             c['safety_findings']=json.loads(analysis['findings']) if analysis else []
@@ -148,6 +152,7 @@ def read(dbpath, asset=None, offset=0):
             for row in db.execute('SELECT * FROM alerts ORDER BY id DESC LIMIT 100'):
                 item=dict(row);item['evidence']=json.loads(item['evidence']);alerts.append(item)
         health.update(wallet_profiler_heartbeat=meta.get('wallet_profiler_heartbeat'),wallet_profiler_age_seconds=age(meta.get('wallet_profiler_heartbeat')),wallet_profiles=int(meta.get('wallet_profiles','0')),wallet_clusters=int(meta.get('wallet_clusters','0')))
+        health.update(market_heartbeat=meta.get('market_heartbeat'),market_age_seconds=age(meta.get('market_heartbeat')),market_assets=int(meta.get('market_assets','0')))
         return {'health':health,'candidates':ranked,'events':events,'wallets':wallets,'clusters':clusters,'alerts':alerts,'has_more':has_more,'offset':offset,'sample_limit':5000,
                 'score_model': {'version':2,'meaning':'Screening evidence only; not a return prediction or buy recommendation.','sample':'Latest 5,000 stored events.','components':['activity score','budgeted sender attribution','contract screening'],'limitations':['Safety screening is not a source-code audit.','Unknown capabilities receive no safety points.','No USD liquidity, holder history, social, or profitable-wallet history.']}}
     finally: db.close()

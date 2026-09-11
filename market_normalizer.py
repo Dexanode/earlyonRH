@@ -1,0 +1,126 @@
+"""Normalize token/curve market data from stored trades and cheap onchain reads."""
+import argparse
+import datetime as dt
+import json
+import logging
+import os
+import sqlite3
+import time
+
+from listener import RPC, RpcError, database, now, set_meta
+
+LOG=logging.getLogger('market-normalizer')
+DECIMALS='0x313ce567';SYMBOL='0x95d89b41';NAME='0x06fdde03';SUPPLY='0x18160ddd';BALANCE='0x70a08231'
+
+
+def schema(db):
+    db.executescript('''
+      CREATE TABLE IF NOT EXISTS market_snapshots(
+        asset TEXT PRIMARY KEY, updated_at TEXT NOT NULL, symbol TEXT, name TEXT,
+        decimals INTEGER, quote_token TEXT, quote_symbol TEXT, quote_decimals INTEGER,
+        price_quote REAL, price_usd REAL, market_cap_quote REAL, market_cap_usd REAL,
+        liquidity_quote REAL, liquidity_usd REAL, volume_5m_quote REAL,
+        volume_1h_quote REAL, volume_24h_quote REAL, change_5m REAL,
+        change_1h REAL, change_6h REAL, change_24h REAL, source TEXT NOT NULL,
+        status TEXT NOT NULL, error TEXT);
+      CREATE TABLE IF NOT EXISTS token_metadata(
+        address TEXT PRIMARY KEY, checked_at TEXT NOT NULL, symbol TEXT, name TEXT,
+        decimals INTEGER, total_supply TEXT, error TEXT);
+    ''')
+
+
+def uint(value):
+    try:return int(value,16)
+    except (TypeError,ValueError):return None
+
+
+def abi_text(value):
+    try:
+        raw=bytes.fromhex(value.removeprefix('0x'))
+        if len(raw)==32:return raw.rstrip(b'\0').decode('utf-8') or None
+        if len(raw)>=64:
+            offset=int.from_bytes(raw[:32],'big');size=int.from_bytes(raw[offset:offset+32],'big')
+            return raw[offset+32:offset+32+size].decode('utf-8') or None
+    except (AttributeError,ValueError,UnicodeDecodeError):pass
+    return None
+
+
+def call(rpc,address,data):return rpc.call('eth_call',[{'to':address,'data':data},'latest'])
+
+
+def metadata(db,rpc,address):
+    cached=db.execute('SELECT * FROM token_metadata WHERE address=?',(address,)).fetchone()
+    if cached and not cached['error']:return dict(cached)
+    try:
+        decimals=uint(call(rpc,address,DECIMALS));supply=uint(call(rpc,address,SUPPLY))
+        symbol=abi_text(call(rpc,address,SYMBOL));name=abi_text(call(rpc,address,NAME))
+        if decimals is None or not 0<=decimals<=36:raise RpcError('invalid decimals')
+        row=(address,now(),symbol,name,decimals,str(supply) if supply is not None else None,None)
+    except RpcError as exc:row=(address,now(),None,None,None,None,str(exc))
+    with db:db.execute('INSERT OR REPLACE INTO token_metadata VALUES(?,?,?,?,?,?,?)',row)
+    return dict(db.execute('SELECT * FROM token_metadata WHERE address=?',(address,)).fetchone())
+
+
+def pct(current,old):return round((current/old-1)*100,2) if current and old else None
+
+
+def calculate(rows,token_decimals,quote_decimals,stamp):
+    trades=[]
+    for r in rows:
+        v=json.loads(r['decoded'])
+        quote=int(v.get('quoteIn') or v.get('quoteOut') or 0)/(10**quote_decimals)
+        tokens=int(v.get('tokensOut') or v.get('tokensIn') or 0)/(10**token_decimals)
+        if quote>0 and tokens>0:trades.append((int(r['event_timestamp']),quote/tokens,quote))
+    if not trades:return {}
+    current=trades[-1][1]
+    def at(seconds):
+        cutoff=stamp-seconds;eligible=[p for ts,p,_ in trades if ts<=cutoff]
+        return eligible[-1] if eligible else None
+    def volume(seconds):return round(sum(q for ts,_,q in trades if ts>=stamp-seconds),8)
+    return {'price_quote':current,'volume_5m_quote':volume(300),'volume_1h_quote':volume(3600),'volume_24h_quote':volume(86400),
+            'change_5m':pct(current,at(300)),'change_1h':pct(current,at(3600)),'change_6h':pct(current,at(21600)),'change_24h':pct(current,at(86400))}
+
+
+def normalize_asset(db,rpc,asset):
+    launch=db.execute("SELECT decoded FROM events WHERE asset=? AND name='TokenLaunched' ORDER BY block_number LIMIT 1",(asset,)).fetchone()
+    watch=db.execute("SELECT address FROM watches WHERE asset=? AND kind='curve' ORDER BY created_block LIMIT 1",(asset,)).fetchone()
+    if not launch or not watch:return False
+    quote=json.loads(launch['decoded']).get('pairToken')
+    if not quote:return False
+    token=metadata(db,rpc,asset);quote_meta=metadata(db,rpc,quote)
+    if token.get('decimals') is None or quote_meta.get('decimals') is None:return False
+    rows=db.execute("SELECT event_timestamp,decoded FROM events WHERE asset=? AND name IN ('CurveBuy','CurveSell') ORDER BY block_number,log_index",(asset,)).fetchall()
+    metrics=calculate(rows,token['decimals'],quote_meta['decimals'],int(time.time()))
+    if not metrics:return False
+    reserve_raw=uint(call(rpc,quote,BALANCE+'0'*24+watch['address'][2:]))
+    liquidity=reserve_raw/(10**quote_meta['decimals']) if reserve_raw is not None else None
+    supply=int(token['total_supply'])/(10**token['decimals']) if token.get('total_supply') else None
+    mc=metrics['price_quote']*supply if supply is not None else None
+    values=(asset,now(),token['symbol'],token['name'],token['decimals'],quote,quote_meta['symbol'],quote_meta['decimals'],metrics['price_quote'],None,mc,None,liquidity,None,metrics['volume_5m_quote'],metrics['volume_1h_quote'],metrics['volume_24h_quote'],metrics['change_5m'],metrics['change_1h'],metrics['change_6h'],metrics['change_24h'],'onchain-curve-events+erc20-balance','quote-only',None)
+    with db:db.execute('INSERT OR REPLACE INTO market_snapshots VALUES('+','.join('?'*24)+')',values)
+    return True
+
+
+def cycle(db,rpc,limit=25):
+    head=int(dict(db.execute('SELECT key,value FROM meta')).get('head',0))
+    assets=[r[0] for r in db.execute("SELECT asset FROM events WHERE name IN ('CurveBuy','CurveSell') AND block_number>? GROUP BY asset ORDER BY COUNT(*) DESC LIMIT ?",(head-10000,limit))]
+    ok=0
+    for asset in assets:
+        try:ok+=normalize_asset(db,rpc,asset)
+        except (RpcError,sqlite3.Error,ValueError) as exc:LOG.warning('market %s delayed: %s',asset,exc)
+    with db:set_meta(db,'market_heartbeat',now());set_meta(db,'market_assets',ok)
+    return ok
+
+
+def main():
+    p=argparse.ArgumentParser();p.add_argument('--db',default='data/live.sqlite');p.add_argument('--interval',type=int,default=60);p.add_argument('--limit',type=int,default=25);a=p.parse_args()
+    url=os.environ.get('MARKET_RPC_HTTP_URL') or os.environ.get('ENRICHMENT_RPC_HTTP_URL') or os.environ.get('RPC_HTTP_URL')
+    if not url:raise ValueError('MARKET_RPC_HTTP_URL or RPC_HTTP_URL required')
+    db=database(a.db);schema(db);rpc=RPC(url,attempts=2,spacing=.15)
+    try:
+        while True:
+            LOG.info('normalized assets=%s',cycle(db,rpc,a.limit));time.sleep(max(30,a.interval))
+    finally:db.close()
+
+
+if __name__=='__main__':logging.basicConfig(level=logging.INFO,format='%(asctime)s %(levelname)s %(message)s');main()
