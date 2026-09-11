@@ -1,6 +1,7 @@
 """Persistent, deduplicated alerts derived from the live radar evidence."""
 import argparse
 import datetime as dt
+import html
 import json
 import logging
 import os
@@ -80,7 +81,7 @@ def track_lifecycle(db):
 
 
 def telegram_text(alert):
-    e=json.loads(alert['evidence']);symbol=e.get('symbol') or alert['asset'][:10];name=e.get('name') or 'Unnamed token'
+    e=json.loads(alert['evidence']);symbol=html.escape(e.get('symbol') or alert['asset'][:10]);name=html.escape(e.get('name') or 'Unnamed token');asset=html.escape(alert['asset'])
     wallets=e.get('source_wallets') or []
     decimals=e.get('quote_decimals');quote=e.get('quote_symbol') or 'quote'
     def amount(raw):
@@ -90,11 +91,12 @@ def telegram_text(alert):
         if value is None:return '—'
         value=float(value)
         return prefix+(f'{value/1_000_000:.2f}m' if abs(value)>=1_000_000 else f'{value/1_000:.1f}k' if abs(value)>=1_000 else f'{value:.4g}')
-    proof='\n'.join(f"• {w['wallet'][:8]}…{w['wallet'][-6:]} · buy {amount(w.get('quote_in_raw'))} · repeat {w.get('buy_count',1)}× · win {w.get('win_rate') if w.get('win_rate') is not None else '—'}%\n  {w.get('buy_tx_url','')}" for w in wallets[:5]) or '• Buyer detail belum cukup untuk diperingkat'
+    proof='\n'.join(f"• <a href=\"{w.get('wallet_url','')}\">{w['wallet'][:8]}…{w['wallet'][-6:]}</a> · buy {html.escape(amount(w.get('quote_in_raw')))} · repeat {w.get('buy_count',1)}× · win {w.get('win_rate') if w.get('win_rate') is not None else '—'}% · <a href=\"{w.get('buy_tx_url','')}\">TX</a>" for w in wallets[:5]) or '• Buyer detail belum cukup untuk diperingkat'
     mc=metric(e.get('market_cap_usd'),'$') if e.get('market_cap_usd') is not None else metric(e.get('market_cap_quote'))+' '+quote
     liq=metric(e.get('liquidity_usd'),'$') if e.get('liquidity_usd') is not None else metric(e.get('liquidity_quote'))+' '+quote
     flow=f"Repeat {e.get('ordered_repeat_wallets',0)} · size-up {e.get('increasing_size_wallets',0)} · retained {e.get('retained_wallets',0)} · qualified migration 5m {e.get('qualified_migrating_wallets_5m',0)}"
-    return (f"🔎 ${symbol} — {alert['title']}\n{name}\n\nCA\n{alert['asset']}\n\nMC {mc} · Liq {liq} · Vol 1h {metric(e.get('volume_1h_quote'))} {quote}\n5m {metric(e.get('change_5m'))}% · 1h {metric(e.get('change_1h'))}%\nBuy/sell {e.get('buys',0)}/{e.get('sells',0)} · buyers {e.get('unique_buyers',0)}\n{flow}\nSafety {e.get('safety_status','unknown')} · score {alert['score'] or '—'}\n\nBUYERS\n{proof}\n\nOnchain evidence; contract dan exit path tetap perlu diverifikasi.")[:4000]
+    gmgn=f'https://gmgn.ai/robinhood/token/{alert["asset"]}'
+    return (f"🔎 <b>${symbol} — {html.escape(alert['title'])}</b>\n{name}\n\n<b>CA</b> · tap untuk copy\n<code>{asset}</code>\n\n<b>MARKET</b>\nMC {mc} · Liq {liq}\nVol 1h {metric(e.get('volume_1h_quote'))} {html.escape(quote)}\n5m {metric(e.get('change_5m'))}% · 1h {metric(e.get('change_1h'))}%\nBuy/sell {e.get('buys',0)}/{e.get('sells',0)} · buyers {e.get('unique_buyers',0)}\n\n<b>FLOW</b>\n{flow}\nSafety {html.escape(e.get('safety_status','unknown'))} · score {alert['score'] or '—'}\n\n<b>BUYERS</b>\n{proof}\n\n<a href=\"{gmgn}\">📈 Open token di GMGN</a>\n<i>Onchain evidence; contract dan exit path tetap perlu diverifikasi.</i>")[:4000]
 
 
 def deliver(db, token=None, chat_id=None, limit=10):
@@ -102,7 +104,8 @@ def deliver(db, token=None, chat_id=None, limit=10):
     rows=db.execute("SELECT a.* FROM alert_deliveries d JOIN alerts a ON a.id=d.alert_id WHERE d.status!='sent' AND d.attempts<5 ORDER BY a.id LIMIT ?",(limit,)).fetchall();sent=0
     for alert in rows:
         try:
-            body=parse.urlencode({'chat_id':chat_id,'text':telegram_text(alert),'disable_web_page_preview':'true'}).encode()
+            buttons={'inline_keyboard':[[{'text':'📈 Open GMGN','url':f'https://gmgn.ai/robinhood/token/{alert["asset"]}'},{'text':'🔍 Explorer','url':f'https://robinhoodchain.blockscout.com/token/{alert["asset"]}'}]]}
+            body=parse.urlencode({'chat_id':chat_id,'text':telegram_text(alert),'parse_mode':'HTML','disable_web_page_preview':'true','reply_markup':json.dumps(buttons)}).encode()
             with request.urlopen(request.Request(f'https://api.telegram.org/bot{token}/sendMessage',data=body),timeout=12) as response:
                 if response.status!=200:raise OSError(f'Telegram HTTP {response.status}')
             with db:db.execute("UPDATE alert_deliveries SET status='sent',attempts=attempts+1,last_attempt_at=?,delivered_at=?,error=NULL WHERE alert_id=?",(now(),now(),alert['id']))
