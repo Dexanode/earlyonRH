@@ -152,6 +152,9 @@ def read(dbpath, asset=None, offset=0):
         shared_clusters={}
         if 'capital_clusters' in tables:
             shared_clusters={r['asset']:r['n'] for r in db.execute("SELECT asset,COUNT(*) n FROM capital_clusters WHERE confidence='observed-shared-sender' AND members>=2 GROUP BY asset")}
+        migration_signal={}
+        if 'capital_migrations' in tables:
+            migration_signal={r['target_asset']:dict(r) for r in db.execute('SELECT target_asset,COUNT(DISTINCT wallet) migrating_wallets,COUNT(DISTINCT source_asset) migration_sources,MIN(latency_seconds) fastest_migration_seconds FROM capital_migrations GROUP BY target_asset')}
         markets={r['asset']:dict(r) for r in db.execute('SELECT * FROM market_snapshots')} if 'market_snapshots' in tables else {}
         for c in candidates.values():
             c['unique_buyers']=len(c['buyers'])
@@ -170,11 +173,13 @@ def read(dbpath, asset=None, offset=0):
             for key in ('ordered_repeat_wallets','increasing_size_wallets','retained_wallets','provisional_funding_roots','shared_sender_wallets'):
                 c[key]=cap.get(key,0) or 0
             c['shared_sender_clusters']=shared_clusters.get(c['id'],0)
+            mig=migration_signal.get(c['id'],{})
+            c['migrating_wallets']=mig.get('migrating_wallets',0);c['migration_sources']=mig.get('migration_sources',0);c['fastest_migration_seconds']=mig.get('fastest_migration_seconds')
             flow=consensus.get(c['id'],{});c['profitable_wallets_5m']=len(flow.get('w5',()))
             c['profitable_wallets_15m']=len(flow.get('w15',()));c['profitable_wallets_30m']=len(flow.get('w30',()))
             c['independent_profitable_wallets_30m']=len(flow.get('direct30',()));c['unattributed_profitable_wallets_30m']=len(flow.get('unknown30',()));c['consensus_proof']=flow.get('proof',[])
             market=markets.get(c['id'],{})
-            for key in ('symbol','name','quote_symbol','price_quote','price_usd','market_cap_quote','market_cap_usd','liquidity_quote','liquidity_usd','volume_5m_quote','volume_1h_quote','volume_24h_quote','change_5m','change_1h','change_6h','change_24h','source','status'):
+            for key in ('symbol','name','quote_symbol','quote_decimals','price_quote','price_usd','market_cap_quote','market_cap_usd','liquidity_quote','liquidity_usd','volume_5m_quote','volume_1h_quote','volume_24h_quote','change_5m','change_1h','change_6h','change_24h','source','status'):
                 c['market_'+key if key in ('source','status') else key]=market.get(key)
             c['safety_score']=analysis['safety_score'] if analysis else None
             c['safety_status']=analysis['safety_status'] if analysis else 'unknown'
@@ -191,7 +196,7 @@ def read(dbpath, asset=None, offset=0):
         health['events_in_sample']=len(recent)
         health['candidates_in_sample']=len(candidates)
         health['decode_errors_in_sample']=sum(r['name']=='DecodeError' for r in recent)
-        events=[]; wallets=[]; clusters=[]; capital_flows=[]; funding_clusters=[]; has_more=False
+        events=[]; wallets=[]; clusters=[]; capital_flows=[]; funding_clusters=[]; migrations=[]; has_more=False
         if asset:
             rows=db.execute('SELECT * FROM events WHERE asset=? ORDER BY block_number DESC,log_index DESC LIMIT 101 OFFSET ?', (asset,offset)).fetchall()
             has_more=len(rows)>100
@@ -206,6 +211,7 @@ def read(dbpath, asset=None, offset=0):
             if 'wallet_clusters' in tables:clusters=[dict(r) for r in db.execute('SELECT * FROM wallet_clusters WHERE asset=? ORDER BY members DESC,transactions DESC',(asset,))]
             if 'capital_wallet_asset' in tables:capital_flows=[dict(r) for r in db.execute('SELECT * FROM capital_wallet_asset WHERE asset=? ORDER BY buy_count DESC,size_trend DESC LIMIT 100',(asset,))]
             if 'capital_clusters' in tables:funding_clusters=[dict(r) for r in db.execute('SELECT * FROM capital_clusters WHERE asset=? ORDER BY members DESC,buys DESC LIMIT 50',(asset,))]
+            if 'capital_migrations' in tables:migrations=[dict(r) for r in db.execute('SELECT * FROM capital_migrations WHERE target_asset=? ORDER BY target_buy_time DESC LIMIT 100',(asset,))]
         alerts=[]
         if 'alerts' in tables:
             for row in db.execute('SELECT * FROM alerts ORDER BY id DESC LIMIT 100'):
@@ -215,7 +221,7 @@ def read(dbpath, asset=None, offset=0):
         health.update(wallet_profiler_heartbeat=meta.get('wallet_profiler_heartbeat'),wallet_profiler_age_seconds=age(meta.get('wallet_profiler_heartbeat')),wallet_profiles=int(meta.get('wallet_profiles','0')),wallet_clusters=int(meta.get('wallet_clusters','0')))
         health.update(wallet_pnl_heartbeat=meta.get('wallet_pnl_heartbeat'),wallet_pnl_age_seconds=age(meta.get('wallet_pnl_heartbeat')),wallet_pnl_wallets=int(meta.get('wallet_pnl_wallets','0')))
         health.update(market_heartbeat=meta.get('market_heartbeat'),market_age_seconds=age(meta.get('market_heartbeat')),market_assets=int(meta.get('market_assets','0')))
-        health.update(capital_flow_heartbeat=meta.get('capital_flow_heartbeat'),capital_flow_age_seconds=age(meta.get('capital_flow_heartbeat')),capital_flow_wallet_assets=int(meta.get('capital_flow_wallet_assets','0')),capital_flow_clusters=int(meta.get('capital_flow_clusters','0')))
+        health.update(capital_flow_heartbeat=meta.get('capital_flow_heartbeat'),capital_flow_age_seconds=age(meta.get('capital_flow_heartbeat')),capital_flow_wallet_assets=int(meta.get('capital_flow_wallet_assets','0')),capital_flow_clusters=int(meta.get('capital_flow_clusters','0')),capital_migrations=int(meta.get('capital_migrations','0')))
         protocols=[dict(r) for r in db.execute('SELECT * FROM protocol_sources ORDER BY status,name')] if 'protocol_sources' in tables else []
         births=[]
         if 'topology_observations' in tables:
@@ -224,7 +230,7 @@ def read(dbpath, asset=None, offset=0):
         health.update(topology_heartbeat=meta.get('topology_heartbeat'),topology_age_seconds=age(meta.get('topology_heartbeat')),
                       topology_entities=int(meta.get('topology_entities','0')),topology_edges=int(meta.get('topology_edges','0')),
                       topology_births=int(meta.get('topology_births','0')))
-        return {'health':health,'candidates':ranked,'events':events,'wallets':wallets,'clusters':clusters,'capital_flows':capital_flows,'funding_clusters':funding_clusters,'alerts':alerts,'births':births,'protocols':protocols,'calibration':calibration(db,tables),'has_more':has_more,'offset':offset,'sample_limit':5000,
+        return {'health':health,'candidates':ranked,'events':events,'wallets':wallets,'clusters':clusters,'capital_flows':capital_flows,'funding_clusters':funding_clusters,'migrations':migrations,'alerts':alerts,'births':births,'protocols':protocols,'calibration':calibration(db,tables),'has_more':has_more,'offset':offset,'sample_limit':5000,
                 'score_model': {'version':2,'meaning':'Screening evidence only; not a return prediction or buy recommendation.','sample':'Latest 5,000 stored events.','components':['activity score','budgeted sender attribution','contract screening'],'limitations':['Safety screening is not a source-code audit.','Unknown capabilities receive no safety points.','No USD liquidity, holder history, social, or profitable-wallet history.']}}
     finally: db.close()
 

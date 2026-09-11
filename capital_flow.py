@@ -25,6 +25,12 @@ def schema(db):
         asset TEXT NOT NULL,funding_root TEXT NOT NULL,members INTEGER NOT NULL,buys INTEGER NOT NULL,
         retained_raw TEXT,confidence TEXT NOT NULL,updated_at TEXT NOT NULL,
         PRIMARY KEY(asset,funding_root));
+      CREATE TABLE IF NOT EXISTS capital_migrations(
+        target_asset TEXT NOT NULL,wallet TEXT NOT NULL,source_asset TEXT NOT NULL,
+        source_sell_time INTEGER,target_buy_time INTEGER,latency_seconds INTEGER,
+        source_sold_raw TEXT,target_buy_raw TEXT,confidence TEXT NOT NULL,updated_at TEXT NOT NULL,
+        PRIMARY KEY(target_asset,wallet,source_asset));
+      CREATE INDEX IF NOT EXISTS capital_migration_target ON capital_migrations(target_asset);
     ''')
 
 
@@ -39,9 +45,9 @@ def rebuild(db,limit=50000):
         raw=int(v.get('quoteIn') or 0) if buy else int(v.get('quoteOut') or 0)
         tokens=int(v.get('tokensOut') or 0) if buy else int(v.get('tokensIn') or 0)
         flows[(row['asset'],wallet.lower())]['buys' if buy else 'sells'].append((row,raw,tokens))
-    stamp=now();clusters=defaultdict(lambda:{'wallets':set(),'buys':0,'retained':0,'confidence':'provisional'})
+    stamp=now();clusters=defaultdict(lambda:{'wallets':set(),'buys':0,'retained':0,'confidence':'provisional'});migrations=[]
     with db:
-        db.execute('DELETE FROM capital_wallet_asset');db.execute('DELETE FROM capital_clusters')
+        db.execute('DELETE FROM capital_wallet_asset');db.execute('DELETE FROM capital_clusters');db.execute('DELETE FROM capital_migrations')
         for (asset,wallet),f in flows.items():
             if not f['buys']:continue
             buys=f['buys'];sells=f['sells'];first,last=buys[0],buys[-1]
@@ -56,7 +62,24 @@ def rebuild(db,limit=50000):
             c=clusters[(asset,root)];c['wallets'].add(wallet);c['buys']+=len(buys);c['retained']+=retained;c['confidence']=confidence
         for (asset,root),c in clusters.items():
             db.execute('INSERT INTO capital_clusters VALUES(?,?,?,?,?,?,?)',(asset,root,len(c['wallets']),c['buys'],str(c['retained']),c['confidence'],stamp))
-        set_meta(db,'capital_flow_heartbeat',stamp);set_meta(db,'capital_flow_wallet_assets',len(flows));set_meta(db,'capital_flow_clusters',len(clusters))
+        by_wallet=defaultdict(list)
+        for (asset,wallet),f in flows.items():
+            if f['buys']:by_wallet[wallet].append((f['buys'][0][0]['event_timestamp'] or 0,asset,f))
+        for wallet,positions in by_wallet.items():
+            positions.sort()
+            for target_time,target_asset,target_flow in positions:
+                prior=[]
+                for _,source_asset,source_flow in positions:
+                    sells=[x for x in source_flow['sells'] if (x[0]['event_timestamp'] or 0)<=target_time]
+                    if source_asset!=target_asset and sells:prior.append((sells[-1][0]['event_timestamp'] or 0,source_asset,sells[-1]))
+                if not prior:continue
+                sold_time,source_asset,sale=max(prior)
+                latency=target_time-sold_time
+                if 0<=latency<=86400:
+                    first=target_flow['buys'][0]
+                    migrations.append((target_asset,wallet,source_asset,sold_time,target_time,latency,str(sale[1]),str(first[1]),'observed-sequential',stamp))
+        db.executemany('INSERT INTO capital_migrations VALUES(?,?,?,?,?,?,?,?,?,?)',migrations)
+        set_meta(db,'capital_flow_heartbeat',stamp);set_meta(db,'capital_flow_wallet_assets',len(flows));set_meta(db,'capital_flow_clusters',len(clusters));set_meta(db,'capital_migrations',len(migrations))
     return len(flows)
 
 

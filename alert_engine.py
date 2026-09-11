@@ -80,12 +80,21 @@ def track_lifecycle(db):
 
 
 def telegram_text(alert):
-    e=json.loads(alert['evidence']);symbol=e.get('symbol') or alert['asset'][:10]
+    e=json.loads(alert['evidence']);symbol=e.get('symbol') or alert['asset'][:10];name=e.get('name') or 'Unnamed token'
     wallets=e.get('source_wallets') or []
-    proof='\n'.join(f"• {w['wallet'][:8]}…{w['wallet'][-6:]} · score {w.get('smart_score','—')} · {w.get('buy_tx_url','')}" for w in wallets[:5])
-    return (f"⚡ {alert['severity'].upper()} · {alert['title']}\n${symbol} · score {alert['score'] or '—'}\n"
-            f"Buy/sell {e.get('buys',0)}/{e.get('sells',0)} · profitable 5/15/30m {e.get('profitable_wallets_5m',0)}/{e.get('profitable_wallets_15m',0)}/{e.get('profitable_wallets_30m',0)}\n"
-            f"Asset: {alert['asset']}\n{proof}\nEvidence only; verify contract, liquidity, and exit path.")[:4000]
+    decimals=e.get('quote_decimals');quote=e.get('quote_symbol') or 'quote'
+    def amount(raw):
+        try:return f"{int(raw)/(10**int(decimals)):,.4g} {quote}" if decimals is not None else f"{raw} raw"
+        except (TypeError,ValueError):return '—'
+    def metric(value,prefix=''):
+        if value is None:return '—'
+        value=float(value)
+        return prefix+(f'{value/1_000_000:.2f}m' if abs(value)>=1_000_000 else f'{value/1_000:.1f}k' if abs(value)>=1_000 else f'{value:.4g}')
+    proof='\n'.join(f"• {w['wallet'][:8]}…{w['wallet'][-6:]} · buy {amount(w.get('quote_in_raw'))} · repeat {w.get('buy_count',1)}× · win {w.get('win_rate') if w.get('win_rate') is not None else '—'}%\n  {w.get('buy_tx_url','')}" for w in wallets[:5]) or '• Buyer detail belum cukup untuk diperingkat'
+    mc=metric(e.get('market_cap_usd'),'$') if e.get('market_cap_usd') is not None else metric(e.get('market_cap_quote'))+' '+quote
+    liq=metric(e.get('liquidity_usd'),'$') if e.get('liquidity_usd') is not None else metric(e.get('liquidity_quote'))+' '+quote
+    flow=f"Repeat {e.get('ordered_repeat_wallets',0)} · size-up {e.get('increasing_size_wallets',0)} · retained {e.get('retained_wallets',0)} · migrating {e.get('migrating_wallets',0)} dari {e.get('migration_sources',0)} token"
+    return (f"🔎 ${symbol} — {alert['title']}\n{name}\n\nCA\n{alert['asset']}\n\nMC {mc} · Liq {liq} · Vol 1h {metric(e.get('volume_1h_quote'))} {quote}\n5m {metric(e.get('change_5m'))}% · 1h {metric(e.get('change_1h'))}%\nBuy/sell {e.get('buys',0)}/{e.get('sells',0)} · buyers {e.get('unique_buyers',0)}\n{flow}\nSafety {e.get('safety_status','unknown')} · score {alert['score'] or '—'}\n\nBUYERS\n{proof}\n\nOnchain evidence; contract dan exit path tetap perlu diverifikasi.")[:4000]
 
 
 def deliver(db, token=None, chat_id=None, limit=10):
@@ -116,6 +125,9 @@ def matches(c):
     if identified and c['safety_status']!='higher-risk' and c.get('ordered_repeat_wallets',0)>=2 and c.get('increasing_size_wallets',0)>=1 and c.get('retained_wallets',0)>=2:
         score=min(100,50+c['ordered_repeat_wallets']*6+c['increasing_size_wallets']*5+c.get('profitable_wallets_30m',0)*4)
         out.append(('repeat-qualified-flow','high','Repeat qualified flow terdeteksi',score))
+    if identified and c['safety_status']!='higher-risk' and c.get('migrating_wallets',0)>=2 and c.get('migration_sources',0)>=1:
+        score=min(100,55+c['migrating_wallets']*7+c['migration_sources']*4)
+        out.append(('capital-rotation','high','Rotasi modal masuk terdeteksi',score))
     if c.get('cluster_count',0)>0 and c.get('cluster_members',0)>=3 and c['buys']>=5:
         out.append(('coordinated-flow','medium','Flow terkoordinasi terdeteksi',c['activity_score']))
     if (c.get('conviction_score') or 0)>=70 and c['safety_status']=='screened' and c['unique_senders']>=3 and c['buys']>=5 and c['buy_sell_ratio']>=1.5 and c['activity_acceleration']>=1.2 and c['routed_share']<=.75:
@@ -130,29 +142,32 @@ def matches(c):
 def source_wallets(db, asset, limit=5, preferred=None):
     """Capture the transactions behind a wallet alert without inventing USD/PnL."""
     tables={r[0] for r in db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
-    if not {'wallet_profiles','events'}.issubset(tables): return []
-    profiles={r['wallet']:dict(r) for r in db.execute('SELECT * FROM wallet_profiles WHERE smart_score>=55')}
+    if 'events' not in tables:return []
+    profiles={r['wallet']:dict(r) for r in db.execute('SELECT * FROM wallet_profiles')} if 'wallet_profiles' in tables else {}
+    capital={r['wallet']:dict(r) for r in db.execute('SELECT * FROM capital_wallet_asset WHERE asset=?',(asset,))} if 'capital_wallet_asset' in tables else {}
     performance={r['wallet']:dict(r) for r in db.execute('SELECT * FROM wallet_performance')} if 'wallet_performance' in tables else {}
     asset_pnl={r['wallet']:dict(r) for r in db.execute('SELECT * FROM wallet_asset_pnl WHERE asset=?',(asset,))} if 'wallet_asset_pnl' in tables else {}
     rows=db.execute("SELECT tx_hash,block_number,observed_at,event_timestamp,name,decoded FROM events WHERE asset=? AND name IN ('CurveBuy','CurveSell') ORDER BY block_number,log_index",(asset,)).fetchall()
     activity=[]
     for row in rows:
         values=json.loads(row['decoded']);wallet=(values.get('buyer') if row['name']=='CurveBuy' else values.get('seller'))
-        if wallet and wallet.lower() in profiles:activity.append((row,wallet.lower(),values))
+        if wallet:activity.append((row,wallet.lower(),values))
     latest={}
     for row,wallet,values in activity:
         if row['name']=='CurveBuy':latest[wallet]=(row,values)
     preferred=set(preferred or ())
-    ranked=sorted(latest.items(),key=lambda item:(item[0] in preferred,profiles[item[0]]['smart_score'],item[1][0]['block_number']),reverse=True)[:limit]
+    eligible=[item for item in latest.items() if profiles.get(item[0],{}).get('smart_score',0)>=55 or capital.get(item[0],{}).get('buy_count',0)>=2]
+    ranked=sorted(eligible,key=lambda item:(item[0] in preferred,capital.get(item[0],{}).get('buy_count',0),profiles.get(item[0],{}).get('smart_score',0),item[1][0]['block_number']),reverse=True)[:limit]
     result=[]
     for wallet,(buy,values) in ranked:
         sells=[(r,v) for r,w,v in activity if w==wallet and r['name']=='CurveSell' and r['block_number']>=buy['block_number']]
-        p=profiles[wallet]
+        p=profiles.get(wallet,{});cap=capital.get(wallet,{})
         perf=performance.get(wallet,{});ap=asset_pnl.get(wallet,{})
         result.append({'wallet':wallet,'buy_tx':buy['tx_hash'],'buy_block':buy['block_number'],'buy_time':buy['event_timestamp'] or buy['observed_at'],
           'quote_in_raw':values.get('quoteIn'),'tokens_out_raw':values.get('tokensOut'),'recorded_sells_since_buy':len(sells),
-          'quote_out_raw_since_buy':str(sum(int(v.get('quoteOut') or 0) for _,v in sells)),'smart_score':p['smart_score'],
-          'tracked_assets':p['assets'],'early_assets':p['early_assets'],'tracked_buys':p['buys'],'tracked_sells':p['sells'],
+          'quote_out_raw_since_buy':str(sum(int(v.get('quoteOut') or 0) for _,v in sells)),'smart_score':p.get('smart_score'),
+          'tracked_assets':p.get('assets',0),'early_assets':p.get('early_assets',0),'tracked_buys':p.get('buys',0),'tracked_sells':p.get('sells',0),
+          'buy_count':cap.get('buy_count',1),'size_trend':cap.get('size_trend'),'retained_raw':cap.get('retained_raw'),
           'wallet_url':'https://robinhoodchain.blockscout.com/address/'+wallet,'buy_tx_url':'https://robinhoodchain.blockscout.com/tx/'+buy['tx_hash'],
           'win_rate':perf.get('win_rate'),'realized_assets':perf.get('realized_assets',0),'realized_by_quote':json.loads(perf.get('realized_by_quote','{}')),
           'asset_realized_pnl_quote':ap.get('realized_pnl_quote'),'asset_quote_symbol':ap.get('quote_symbol'),
@@ -161,7 +176,7 @@ def source_wallets(db, asset, limit=5, preferred=None):
 
 
 def evidence(c, db=None):
-    keys=('protocol','activity_score','conviction_score','safety_score','safety_status','buys','sells','unique_buyers','repeat_buyers','unique_senders','routed_share','smart_wallets','best_wallet_score','cluster_count','cluster_members','ordered_repeat_wallets','increasing_size_wallets','retained_wallets','provisional_funding_roots','shared_sender_wallets','shared_sender_clusters','activity_acceleration','age_blocks','buy_sell_ratio','safety_findings','symbol','name','quote_symbol','price_quote','price_usd','market_cap_quote','market_cap_usd','liquidity_quote','liquidity_usd','volume_5m_quote','volume_1h_quote','volume_24h_quote','change_5m','change_1h','change_6h','change_24h','market_source','market_status','profitable_wallets_5m','profitable_wallets_15m','profitable_wallets_30m','independent_profitable_wallets_30m','unattributed_profitable_wallets_30m','consensus_proof')
+    keys=('protocol','activity_score','conviction_score','safety_score','safety_status','buys','sells','unique_buyers','repeat_buyers','unique_senders','routed_share','smart_wallets','best_wallet_score','cluster_count','cluster_members','ordered_repeat_wallets','increasing_size_wallets','retained_wallets','provisional_funding_roots','shared_sender_wallets','shared_sender_clusters','migrating_wallets','migration_sources','fastest_migration_seconds','activity_acceleration','age_blocks','buy_sell_ratio','safety_findings','symbol','name','quote_symbol','quote_decimals','price_quote','price_usd','market_cap_quote','market_cap_usd','liquidity_quote','liquidity_usd','volume_5m_quote','volume_1h_quote','volume_24h_quote','change_5m','change_1h','change_6h','change_24h','market_source','market_status','profitable_wallets_5m','profitable_wallets_15m','profitable_wallets_30m','independent_profitable_wallets_30m','unattributed_profitable_wallets_30m','consensus_proof')
     out={k:c.get(k) for k in keys}
     preferred=[p['wallet'] for p in c.get('consensus_proof',[])]
     wallets=source_wallets(db,c['id'],preferred=preferred) if db else []

@@ -43,9 +43,15 @@ class AlertTests(unittest.TestCase):
         rules=[r[0] for r in matches(candidate(conviction_score=None,safety_score=None,safety_status='unknown',smart_wallets=5,activity_score=65,buys=25,sells=8,symbol=None,name=None,market_status='unknown'))]
         self.assertFalse(any(r.startswith('smart-') for r in rules))
     def test_telegram_message_contains_traceable_evidence(self):
-        row={'asset':candidate()['id'],'severity':'high','title':'Consensus','score':80,'evidence':json.dumps({'symbol':'JAR','buys':9,'sells':2,'source_wallets':[{'wallet':'0x'+'2'*40,'smart_score':70,'buy_tx_url':'https://example/tx'}]})}
+        row={'asset':candidate()['id'],'severity':'high','title':'Consensus','score':80,'evidence':json.dumps({'symbol':'JAR','name':'Jar Agent','quote_symbol':'WETH','quote_decimals':18,'buys':9,'sells':2,'source_wallets':[{'wallet':'0x'+'2'*40,'smart_score':70,'buy_count':3,'quote_in_raw':'1000000000000000000','buy_tx_url':'https://example/tx'}]})}
         message=telegram_text(row)
-        self.assertIn('$JAR',message);self.assertIn('https://example/tx',message)
+        self.assertIn('$JAR',message);self.assertIn('Jar Agent',message);self.assertIn('1 WETH',message);self.assertIn('repeat 3×',message);self.assertIn('https://example/tx',message)
+
+    def test_capital_rotation_requires_identified_safe_asset(self):
+        good=candidate(symbol='MOVE',name='Move',market_status='quote-only',migrating_wallets=2,migration_sources=1)
+        self.assertIn('capital-rotation',[r[0] for r in matches(good)])
+        good['symbol']=good['name']=None;good['market_status']='unknown'
+        self.assertNotIn('capital-rotation',[r[0] for r in matches(good)])
 
     def test_lifecycle_tracks_returns_and_wallet_exits(self):
         with self.db:

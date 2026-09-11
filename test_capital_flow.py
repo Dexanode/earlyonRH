@@ -16,4 +16,12 @@ class CapitalFlowTests(unittest.TestCase):
    rebuild(db);row=db.execute('SELECT * FROM capital_wallet_asset').fetchone()
    self.assertEqual((row['buy_count'],row['sell_count'],row['repeat_latency_seconds'],row['size_trend'],row['retained_raw'],row['funding_root']),(2,1,20,2.0,'1400',sender))
    self.assertEqual(db.execute('SELECT confidence FROM capital_clusters').fetchone()[0],'observed-shared-sender');db.close()
+ def test_cross_asset_rotation_requires_sell_before_new_buy(self):
+  with tempfile.TemporaryDirectory() as d:
+   db=database(Path(d)/'x.sqlite');wallet='0x'+'1'*40;old='0x'+'a'*40;new='0x'+'b'*40
+   values=[(old,'CurveBuy',90,{'buyer':wallet,'quoteIn':'100','tokensOut':'1000'}),(old,'CurveSell',100,{'seller':wallet,'quoteOut':'130','tokensIn':'800'}),(new,'CurveBuy',130,{'buyer':wallet,'quoteIn':'120','tokensOut':'900'})]
+   with db:
+    for i,(asset,name,ts,v) in enumerate(values):db.execute('INSERT INTO events VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)',('0x'+str(i+1).zfill(64),i,10+i,'0x'+'0'*64,asset,'curve',name,asset,now(),ts,json.dumps(v),'{}',None))
+   rebuild(db);row=db.execute('SELECT * FROM capital_migrations').fetchone()
+   self.assertEqual((row['source_asset'],row['target_asset'],row['latency_seconds'],row['confidence']),(old,new,30,'observed-sequential'));db.close()
 if __name__=='__main__':unittest.main()
