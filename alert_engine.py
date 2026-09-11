@@ -105,15 +105,14 @@ def deliver(db, token=None, chat_id=None, limit=10):
 
 def matches(c):
     out=[]
+    identified=bool((c.get('symbol') or '').strip() or (c.get('name') or '').strip()) and c.get('market_status') not in (None,'unknown')
     if c['safety_status']=='higher-risk':
         out.append(('contract-risk','critical','Contract risk terdeteksi',c.get('safety_score') or 0))
-    if c.get('profitable_wallets_30m',0)>=3 and c.get('profitable_wallets_15m',0)>=2 and c.get('independent_profitable_wallets_30m',0)>=2 and c['safety_status']!='higher-risk':
+    if identified and c.get('profitable_wallets_30m',0)>=3 and c.get('profitable_wallets_15m',0)>=2 and c.get('independent_profitable_wallets_30m',0)>=2 and c['safety_status']!='higher-risk':
         score=min(100,55+c['profitable_wallets_5m']*8+c['profitable_wallets_15m']*5+c['independent_profitable_wallets_30m']*3)
         out.append(('smart-money-consensus','high','Profitable-wallet consensus terdeteksi',score))
-    if c.get('smart_wallets',0)>=2 and (c.get('conviction_score') or 0)>=55 and c['safety_status']=='screened' and c['buys']>=5:
+    if identified and c.get('profitable_wallets_30m',0)>=2 and c.get('smart_wallets',0)>=2 and (c.get('conviction_score') or 0)>=55 and c['safety_status']=='screened' and c['buys']>=5:
         out.append(('smart-wallet-entry','high','Beberapa early wallet masuk',c['conviction_score']))
-    elif c.get('smart_wallets',0)>=5 and c['activity_score']>=60 and c['buys']>=20 and c['sells']>=5 and (c.get('age_blocks') is None or c['age_blocks']<=3000):
-        out.append(('smart-wallet-watch','medium','Smart-wallet flow perlu diperiksa',c['activity_score']))
     if c.get('cluster_count',0)>0 and c.get('cluster_members',0)>=3 and c['buys']>=5:
         out.append(('coordinated-flow','medium','Flow terkoordinasi terdeteksi',c['activity_score']))
     if (c.get('conviction_score') or 0)>=70 and c['safety_status']=='screened' and c['unique_senders']>=3 and c['buys']>=5 and c['buy_sell_ratio']>=1.5 and c['activity_acceleration']>=1.2 and c['routed_share']<=.75:

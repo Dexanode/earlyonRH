@@ -39,9 +39,9 @@ class AlertTests(unittest.TestCase):
         item=source_wallets(self.db,asset)[0]
         self.assertEqual((item['quote_in_raw'],item['recorded_sells_since_buy'],item['quote_out_raw_since_buy']),('100',1,'150'))
         self.assertIsNone(item['realized_pnl_usd'])
-    def test_smart_wallet_watch_allows_explicitly_unknown_audit(self):
-        rules=[r[0] for r in matches(candidate(conviction_score=None,safety_score=None,safety_status='unknown',smart_wallets=5,activity_score=65,buys=25,sells=8))]
-        self.assertIn('smart-wallet-watch',rules)
+    def test_unnamed_activity_cannot_be_called_smart_wallet_flow(self):
+        rules=[r[0] for r in matches(candidate(conviction_score=None,safety_score=None,safety_status='unknown',smart_wallets=5,activity_score=65,buys=25,sells=8,symbol=None,name=None,market_status='unknown'))]
+        self.assertFalse(any(r.startswith('smart-') for r in rules))
     def test_telegram_message_contains_traceable_evidence(self):
         row={'asset':candidate()['id'],'severity':'high','title':'Consensus','score':80,'evidence':json.dumps({'symbol':'JAR','buys':9,'sells':2,'source_wallets':[{'wallet':'0x'+'2'*40,'smart_score':70,'buy_tx_url':'https://example/tx'}]})}
         message=telegram_text(row)
@@ -60,7 +60,7 @@ class AlertTests(unittest.TestCase):
         self.assertEqual((row['current_return'],row['max_return'],row['drawdown_from_ath']),(50.0,50.0,0.0))
 
     def test_consensus_requires_profitable_and_independent_wallets(self):
-        good=candidate(profitable_wallets_5m=1,profitable_wallets_15m=2,profitable_wallets_30m=3,independent_profitable_wallets_30m=2)
+        good=candidate(profitable_wallets_5m=1,profitable_wallets_15m=2,profitable_wallets_30m=3,independent_profitable_wallets_30m=2,symbol='REAL',name='Real',market_status='quote-only')
         self.assertIn('smart-money-consensus',[r[0] for r in matches(good)])
         good['independent_profitable_wallets_30m']=1
         self.assertNotIn('smart-money-consensus',[r[0] for r in matches(good)])
