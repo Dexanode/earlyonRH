@@ -25,10 +25,10 @@ class DashboardTests(unittest.TestCase):
         c=Collector(db,FakeRPC([launch,buy]),start=2,chunk=1);c.setup();c.tick();db.close()
     def test_calibration_groups_mature_results_by_rule(self):
         db=database(self.path)
-        db.executescript('CREATE TABLE alerts(id INTEGER PRIMARY KEY,rule TEXT,severity TEXT); CREATE TABLE alert_lifecycle(alert_id INTEGER,return_5m REAL,return_15m REAL,return_1h REAL,return_6h REAL,max_return REAL,drawdown_from_ath REAL);')
+        db.executescript('CREATE TABLE alerts(id INTEGER PRIMARY KEY,rule TEXT,severity TEXT,created_at TEXT); CREATE TABLE alert_lifecycle(alert_id INTEGER,tracking_started_at TEXT,return_5m REAL,return_15m REAL,return_1h REAL,return_6h REAL,max_return REAL,drawdown_from_ath REAL);')
         with db:
-            db.execute("INSERT INTO alerts VALUES(1,'consensus','high')")
-            db.execute('INSERT INTO alert_lifecycle VALUES(1,5,10,20,30,55,-8)')
+            db.execute("INSERT INTO alerts VALUES(1,'consensus','high','2026-09-11T00:00:00+00:00')")
+            db.execute("INSERT INTO alert_lifecycle VALUES(1,'2026-09-11T00:00:10+00:00',5,10,20,30,55,-8)")
         result=calibration(db,{'alerts','alert_lifecycle'});db.close();rule=result['rules'][0]
         self.assertEqual((rule['tracked'],rule['mature_1h'],rule['win_rate_1h'],rule['hit_50']),(1,1,100.0,100.0))
         self.assertEqual(rule['recommendation'],'collecting-data')

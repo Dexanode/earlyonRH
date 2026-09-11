@@ -39,7 +39,8 @@ def age(value):
 
 def calibration(db, tables):
     if not {'alerts','alert_lifecycle'}.issubset(tables):return {'rules':[],'totals':{'tracked':0,'mature_1h':0,'rules':0}}
-    rows=db.execute('SELECT a.rule,a.severity,l.* FROM alerts a JOIN alert_lifecycle l ON l.alert_id=a.id').fetchall();groups={}
+    all_rows=db.execute('SELECT a.rule,a.severity,a.created_at,l.* FROM alerts a JOIN alert_lifecycle l ON l.alert_id=a.id').fetchall()
+    rows=[r for r in all_rows if abs((dt.datetime.fromisoformat(r['tracking_started_at'])-dt.datetime.fromisoformat(r['created_at'])).total_seconds())<=60];groups={}
     for row in rows:groups.setdefault(row['rule'],[]).append(row)
     result=[]
     for rule,items in groups.items():
@@ -53,7 +54,7 @@ def calibration(db, tables):
           'median_1h':round(statistics.median(one),2) if one else None,'median_6h':round(statistics.median(metric('return_6h')),2) if metric('return_6h') else None,
           'hit_25':hit(25),'hit_50':hit(50),'hit_100':hit(100),'median_drawdown':round(statistics.median(drawdowns),2) if drawdowns else None,'recommendation':recommendation})
     result.sort(key=lambda x:(x['mature_1h'],x['tracked']),reverse=True)
-    return {'rules':result,'totals':{'tracked':len(rows),'mature_1h':sum(x['mature_1h'] for x in result),'rules':len(result)},
+    return {'rules':result,'totals':{'tracked':len(all_rows),'eligible':len(rows),'legacy':len(all_rows)-len(rows),'mature_1h':sum(x['mature_1h'] for x in result),'rules':len(result)},
             'method':{'win':'1h return > 0%','hits':'Maximum observed return since tracking began','minimum_sample':20,'price_unit':'Quote-token price; never mixed across assets'}}
 
 
