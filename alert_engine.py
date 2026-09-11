@@ -67,7 +67,8 @@ def track_lifecycle(db):
                 if wallet in wallets:sold.add(wallet)
         current=_pct(price,entry);maximum=_pct(ath,entry);drawdown=round((price/ath-1)*100,2) if ath else None
         values=(alert['id'],now(),started,entry,price,ath,checkpoints['return_5m'],checkpoints['return_15m'],checkpoints['return_1h'],checkpoints['return_6h'],current,maximum,drawdown,len(wallets),len(sold),buys,sells)
-        with db:db.execute('INSERT OR REPLACE INTO alert_lifecycle VALUES('+','.join('?'*17)+')',values)
+        columns='alert_id,updated_at,tracking_started_at,entry_price_quote,latest_price_quote,ath_price_quote,return_5m,return_15m,return_1h,return_6h,current_return,max_return,drawdown_from_ath,source_wallets,wallets_sold,post_alert_buys,post_alert_sells'
+        with db:db.execute(f'INSERT OR REPLACE INTO alert_lifecycle({columns}) VALUES('+','.join('?'*17)+')',values)
         updated+=1
     return updated
 
