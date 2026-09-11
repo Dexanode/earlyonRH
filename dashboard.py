@@ -1,5 +1,6 @@
 """Private read-only dashboard. Bind to loopback or use the Compose SSH tunnel."""
 import argparse
+from collections import Counter, defaultdict
 import datetime as dt
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
@@ -113,6 +114,9 @@ def read(dbpath, asset=None, offset=0):
                 if len(item['proof'])<10:item['proof'].append({'wallet':wallet,'tx_hash':row['tx_hash'],'block':row['block_number'],'timestamp':row['event_timestamp'],'relation':tx_rel.get(row['tx_hash']) or 'unknown','win_rate':profitable[wallet]['win_rate'],'realized_assets':profitable[wallet]['realized_assets']})
         launches = {r['asset']: r['created_block'] for r in db.execute('SELECT asset,MIN(created_block) created_block FROM watches WHERE asset IS NOT NULL GROUP BY asset')}
         launch_deployers={r['target']:r['source'].lower() for r in db.execute("SELECT source,target FROM topology_edges WHERE relation='deployed'")} if 'topology_edges' in tables else {}
+        deployer_launch_counts=Counter(launch_deployers.values())
+        deployer_assets=defaultdict(list)
+        for token,deployer in launch_deployers.items():deployer_assets[deployer].append(token)
         candidates = {}
         for row in recent:
             key = row['asset']
@@ -197,6 +201,8 @@ def read(dbpath, asset=None, offset=0):
             c['safety_findings']=json.loads(analysis['findings']) if analysis else []
             c['deployer']=(analysis['deployer'] if analysis and analysis['deployer'] else launch_deployers.get(c['id']))
             deployer=(c['deployer'] or '').lower()
+            c['deployer_launch_count']=deployer_launch_counts.get(deployer,0)
+            c['deployer_other_assets']=[a for a in deployer_assets.get(deployer,()) if a!=c['id']][:10]
             c['dev_buy_count']=sum(name=='CurveBuy' and wallet==deployer for name,wallet in c['trade_wallets']) if deployer else 0
             c['dev_sell_count']=sum(name=='CurveSell' and wallet==deployer for name,wallet in c['trade_wallets']) if deployer else 0
             c['dev_exit_detected']=c['dev_sell_count']>0

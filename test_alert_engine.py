@@ -32,6 +32,10 @@ class AlertTests(unittest.TestCase):
         self.assertFalse(any(r[0] != 'dev-exit' for r in matches(candidate(dev_exit_detected=True,dev_sell_count=1))))
         self.assertEqual(matches(candidate(buys_5m=0)),[])
         self.assertEqual(matches(candidate(deployer=None)),[])
+
+    def test_serial_deployer_is_exposed_as_risk_evidence(self):
+        rules={r[0] for r in matches(candidate(deployer_launch_count=4))}
+        self.assertEqual(rules,{'serial-deployer'})
     def test_critical_contract_risk(self):
         result=matches(candidate(safety_status='higher-risk',safety_score=10))
         self.assertEqual(result[0][:2],('contract-risk','critical'))
