@@ -16,7 +16,11 @@ class WalletProfilerTests(unittest.TestCase):
                 db.execute('INSERT INTO watches(address,kind,asset,created_block) VALUES(?,?,?,?)',(asset,'curve',asset,100))
                 for i,w in enumerate(('0x'+'1'*40,'0x'+'2'*40)):
                     tx='0x'+str(i+1).zfill(64);decoded=json.dumps({'buyer':w})
-                    db.execute('INSERT INTO events(chain_id,block_number,block_hash,tx_hash,tx_index,log_index,address,kind,asset,topic0,name,decoded,raw,observed_at,event_timestamp,decode_error) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',(4663,110+i,'0x'+'0'*64,tx,0,i,asset,'curve',asset,'0x0','CurveBuy',decoded,'{}',now(),now(),None))
+                    db.execute(
+                        'INSERT INTO events(tx_hash,log_index,block_number,block_hash,address,kind,name,asset,observed_at,event_timestamp,decoded,raw,decode_error) '
+                        'VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)',
+                        (tx,i,110+i,'0x'+'0'*64,asset,'curve','CurveBuy',asset,now(),110+i,decoded,'{}',None),
+                    )
                     db.execute('INSERT INTO tx_attributions VALUES(?,?,?,?,?,?,?)',(tx,asset,sender,w,'routed',now(),None))
             self.assertEqual(rebuild(db),2)
             self.assertEqual(db.execute('SELECT COUNT(*) FROM wallet_profiles WHERE early_assets=1').fetchone()[0],2)
