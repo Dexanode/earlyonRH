@@ -116,11 +116,14 @@ def read(dbpath, asset=None, offset=0):
         for row in recent:
             key = row['asset']
             if not key: continue
-            c = candidates.setdefault(key, {'id':key,'kind':'pool' if row['kind']=='v4' else 'token','protocol':row['kind'],'events':0,'buys':0,'sells':0,'liquidity_changes':0,'last_block':row['block_number'],'last_seen':row['observed_at'],'first_seen_in_sample':row['observed_at'],'latest_event':row['name'],'currencies':[],'buyers':{},'events_last_100':0,'events_previous_400':0,'launch_block':launches.get(key)})
+            c = candidates.setdefault(key, {'id':key,'kind':'pool' if row['kind']=='v4' else 'token','protocol':row['kind'],'events':0,'buys':0,'sells':0,'buys_5m':0,'sells_5m':0,'liquidity_changes':0,'last_block':row['block_number'],'last_seen':row['observed_at'],'first_seen_in_sample':row['observed_at'],'latest_event':row['name'],'currencies':[],'buyers':{},'events_last_100':0,'events_previous_400':0,'launch_block':launches.get(key)})
             c['events'] += 1
             c['first_seen_in_sample'] = min(c['first_seen_in_sample'],row['observed_at'])
             c['buys'] += row['name']=='CurveBuy'
             c['sells'] += row['name']=='CurveSell'
+            event_age=max(0,reference_ts-(row['event_timestamp'] or 0)) if reference_ts else None
+            if event_age is not None and event_age<=300:
+                c['buys_5m'] += row['name']=='CurveBuy';c['sells_5m'] += row['name']=='CurveSell'
             c['liquidity_changes'] += row['name']=='ModifyLiquidity'
             if head is not None:
                 c['events_last_100'] += row['block_number'] > head-100

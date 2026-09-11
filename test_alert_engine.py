@@ -49,7 +49,7 @@ class AlertTests(unittest.TestCase):
         self.assertIn('<code>'+candidate()['id']+'</code>',message);self.assertIn('https://gmgn.ai/robinhood/token/'+candidate()['id'],message)
 
     def test_capital_rotation_requires_identified_safe_asset(self):
-        good=candidate(symbol='MOVE',name='Move',market_status='quote-only',qualified_migrating_wallets_5m=2,migration_sources=1)
+        good=candidate(symbol='MOVE',name='Move',market_status='quote-only',qualified_migrating_wallets_5m=2,migration_sources=1,age_blocks=500,buys_5m=2)
         self.assertIn('capital-rotation',[r[0] for r in matches(good)])
         good['symbol']=good['name']=None;good['market_status']='unknown'
         self.assertNotIn('capital-rotation',[r[0] for r in matches(good)])

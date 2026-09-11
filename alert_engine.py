@@ -125,10 +125,10 @@ def matches(c):
         out.append(('smart-money-consensus','high','Profitable-wallet consensus terdeteksi',score))
     if identified and c.get('profitable_wallets_30m',0)>=2 and c.get('smart_wallets',0)>=2 and (c.get('conviction_score') or 0)>=55 and c['safety_status']=='screened' and c['buys']>=5:
         out.append(('smart-wallet-entry','high','Beberapa early wallet masuk',c['conviction_score']))
-    if identified and c['safety_status']!='higher-risk' and c.get('ordered_repeat_wallets',0)>=2 and c.get('increasing_size_wallets',0)>=1 and c.get('retained_wallets',0)>=2:
+    if identified and c.get('age_blocks') is not None and c['age_blocks']<=3000 and c.get('buys_5m',0)>=2 and c['safety_status']!='higher-risk' and c.get('ordered_repeat_wallets',0)>=2 and c.get('increasing_size_wallets',0)>=1 and c.get('retained_wallets',0)>=2:
         score=min(100,50+c['ordered_repeat_wallets']*6+c['increasing_size_wallets']*5+c.get('profitable_wallets_30m',0)*4)
         out.append(('repeat-qualified-flow','high','Repeat qualified flow terdeteksi',score))
-    if identified and c['safety_status']!='higher-risk' and c.get('qualified_migrating_wallets_5m',0)>=2 and c.get('migration_sources',0)>=1:
+    if identified and c.get('age_blocks') is not None and c['age_blocks']<=3000 and c.get('buys_5m',0)>=2 and c['safety_status']!='higher-risk' and c.get('qualified_migrating_wallets_5m',0)>=2 and c.get('migration_sources',0)>=1:
         score=min(100,60+c['qualified_migrating_wallets_5m']*8+c['migration_sources']*2)
         out.append(('capital-rotation','high','Rotasi modal masuk terdeteksi',score))
     if c.get('cluster_count',0)>0 and c.get('cluster_members',0)>=3 and c['buys']>=5:
@@ -179,7 +179,7 @@ def source_wallets(db, asset, limit=5, preferred=None):
 
 
 def evidence(c, db=None):
-    keys=('protocol','activity_score','conviction_score','safety_score','safety_status','buys','sells','unique_buyers','repeat_buyers','unique_senders','routed_share','smart_wallets','best_wallet_score','cluster_count','cluster_members','ordered_repeat_wallets','increasing_size_wallets','retained_wallets','provisional_funding_roots','shared_sender_wallets','shared_sender_clusters','migrating_wallets','migration_sources','fastest_migration_seconds','qualified_migrating_wallets_5m','activity_acceleration','age_blocks','buy_sell_ratio','safety_findings','symbol','name','quote_symbol','quote_decimals','price_quote','price_usd','market_cap_quote','market_cap_usd','liquidity_quote','liquidity_usd','volume_5m_quote','volume_1h_quote','volume_24h_quote','change_5m','change_1h','change_6h','change_24h','market_source','market_status','profitable_wallets_5m','profitable_wallets_15m','profitable_wallets_30m','independent_profitable_wallets_30m','unattributed_profitable_wallets_30m','consensus_proof')
+    keys=('protocol','activity_score','conviction_score','safety_score','safety_status','buys','sells','buys_5m','sells_5m','unique_buyers','repeat_buyers','unique_senders','routed_share','smart_wallets','best_wallet_score','cluster_count','cluster_members','ordered_repeat_wallets','increasing_size_wallets','retained_wallets','provisional_funding_roots','shared_sender_wallets','shared_sender_clusters','migrating_wallets','migration_sources','fastest_migration_seconds','qualified_migrating_wallets_5m','activity_acceleration','age_blocks','buy_sell_ratio','safety_findings','symbol','name','quote_symbol','quote_decimals','price_quote','price_usd','market_cap_quote','market_cap_usd','liquidity_quote','liquidity_usd','volume_5m_quote','volume_1h_quote','volume_24h_quote','change_5m','change_1h','change_6h','change_24h','market_source','market_status','profitable_wallets_5m','profitable_wallets_15m','profitable_wallets_30m','independent_profitable_wallets_30m','unattributed_profitable_wallets_30m','consensus_proof')
     out={k:c.get(k) for k in keys}
     preferred=[p['wallet'] for p in c.get('consensus_proof',[])]
     wallets=source_wallets(db,c['id'],preferred=preferred) if db else []
