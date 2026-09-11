@@ -28,6 +28,9 @@ def matches(c):
     out=[]
     if c['safety_status']=='higher-risk':
         out.append(('contract-risk','critical','Contract risk terdeteksi',c.get('safety_score') or 0))
+    if c.get('profitable_wallets_30m',0)>=3 and c.get('profitable_wallets_15m',0)>=2 and c.get('independent_profitable_wallets_30m',0)>=2 and c['safety_status']!='higher-risk':
+        score=min(100,55+c['profitable_wallets_5m']*8+c['profitable_wallets_15m']*5+c['independent_profitable_wallets_30m']*3)
+        out.append(('smart-money-consensus','high','Profitable-wallet consensus terdeteksi',score))
     if c.get('smart_wallets',0)>=2 and (c.get('conviction_score') or 0)>=55 and c['safety_status']=='screened' and c['buys']>=5:
         out.append(('smart-wallet-entry','high','Beberapa early wallet masuk',c['conviction_score']))
     elif c.get('smart_wallets',0)>=5 and c['activity_score']>=60 and c['buys']>=20 and c['sells']>=5 and (c.get('age_blocks') is None or c['age_blocks']<=3000):
@@ -43,7 +46,7 @@ def matches(c):
     return out
 
 
-def source_wallets(db, asset, limit=5):
+def source_wallets(db, asset, limit=5, preferred=None):
     """Capture the transactions behind a wallet alert without inventing USD/PnL."""
     tables={r[0] for r in db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
     if not {'wallet_profiles','events'}.issubset(tables): return []
@@ -58,7 +61,8 @@ def source_wallets(db, asset, limit=5):
     latest={}
     for row,wallet,values in activity:
         if row['name']=='CurveBuy':latest[wallet]=(row,values)
-    ranked=sorted(latest.items(),key=lambda item:(profiles[item[0]]['smart_score'],item[1][0]['block_number']),reverse=True)[:limit]
+    preferred=set(preferred or ())
+    ranked=sorted(latest.items(),key=lambda item:(item[0] in preferred,profiles[item[0]]['smart_score'],item[1][0]['block_number']),reverse=True)[:limit]
     result=[]
     for wallet,(buy,values) in ranked:
         sells=[(r,v) for r,w,v in activity if w==wallet and r['name']=='CurveSell' and r['block_number']>=buy['block_number']]
@@ -76,9 +80,10 @@ def source_wallets(db, asset, limit=5):
 
 
 def evidence(c, db=None):
-    keys=('protocol','activity_score','conviction_score','safety_score','safety_status','buys','sells','unique_buyers','repeat_buyers','unique_senders','routed_share','smart_wallets','best_wallet_score','cluster_count','cluster_members','activity_acceleration','age_blocks','buy_sell_ratio','safety_findings','symbol','name','quote_symbol','price_quote','price_usd','market_cap_quote','market_cap_usd','liquidity_quote','liquidity_usd','volume_5m_quote','volume_1h_quote','volume_24h_quote','change_5m','change_1h','change_6h','change_24h','market_source','market_status')
+    keys=('protocol','activity_score','conviction_score','safety_score','safety_status','buys','sells','unique_buyers','repeat_buyers','unique_senders','routed_share','smart_wallets','best_wallet_score','cluster_count','cluster_members','activity_acceleration','age_blocks','buy_sell_ratio','safety_findings','symbol','name','quote_symbol','price_quote','price_usd','market_cap_quote','market_cap_usd','liquidity_quote','liquidity_usd','volume_5m_quote','volume_1h_quote','volume_24h_quote','change_5m','change_1h','change_6h','change_24h','market_source','market_status','profitable_wallets_5m','profitable_wallets_15m','profitable_wallets_30m','independent_profitable_wallets_30m','consensus_proof')
     out={k:c.get(k) for k in keys}
-    wallets=source_wallets(db,c['id']) if db else []
+    preferred=[p['wallet'] for p in c.get('consensus_proof',[])]
+    wallets=source_wallets(db,c['id'],preferred=preferred) if db else []
     out.update(source_wallets=wallets,market_data_status=c.get('market_status') or 'unknown',wallet_pnl_status='listener-window' if any(w.get('pnl_coverage') for w in wallets) else 'unknown',
                minting_capability='unknown',contract_source_verification='unknown')
     return out

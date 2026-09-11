@@ -42,5 +42,10 @@ class AlertTests(unittest.TestCase):
     def test_smart_wallet_watch_allows_explicitly_unknown_audit(self):
         rules=[r[0] for r in matches(candidate(conviction_score=None,safety_score=None,safety_status='unknown',smart_wallets=5,activity_score=65,buys=25,sells=8))]
         self.assertIn('smart-wallet-watch',rules)
+    def test_consensus_requires_profitable_and_independent_wallets(self):
+        good=candidate(profitable_wallets_5m=1,profitable_wallets_15m=2,profitable_wallets_30m=3,independent_profitable_wallets_30m=2)
+        self.assertIn('smart-money-consensus',[r[0] for r in matches(good)])
+        good['independent_profitable_wallets_30m']=1
+        self.assertNotIn('smart-money-consensus',[r[0] for r in matches(good)])
 
 if __name__=='__main__':unittest.main()

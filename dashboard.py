@@ -69,7 +69,23 @@ def read(dbpath, asset=None, offset=0):
                 health['reason'] += f' Coverage gap lama: blok {health["uncovered_from"]:,}–{health["uncovered_to"]:,}.'
             if meta.get('recovery_error'):
                 health['reason'] += ' Recovery: ' + meta['recovery_error']
-        recent = db.execute('SELECT asset,kind,name,decoded,block_number,observed_at,event_timestamp FROM events ORDER BY block_number DESC,log_index DESC LIMIT 5000').fetchall()
+        recent = db.execute('SELECT tx_hash,asset,kind,name,decoded,block_number,observed_at,event_timestamp FROM events ORDER BY block_number DESC,log_index DESC LIMIT 5000').fetchall()
+        profitable={r['wallet']:dict(r) for r in db.execute('SELECT wallet,win_rate,realized_assets,realized_by_quote FROM wallet_performance WHERE win_rate>=55 AND realized_assets>=3')} if 'wallet_performance' in tables else {}
+        tx_rel={r['tx_hash']:r['relation'] for r in db.execute('SELECT tx_hash,relation FROM tx_attributions WHERE error IS NULL')} if 'tx_attributions' in tables else {}
+        reference_ts=max((r['event_timestamp'] or 0 for r in recent),default=0)
+        consensus={}
+        for row in recent:
+            if row['name']!='CurveBuy' or not row['asset']:continue
+            wallet=(json.loads(row['decoded']).get('buyer') or '').lower()
+            if wallet not in profitable:continue
+            item=consensus.setdefault(row['asset'],{'w5':set(),'w15':set(),'w30':set(),'direct30':set(),'proof':[]})
+            seconds=max(0,reference_ts-(row['event_timestamp'] or 0))
+            if seconds<=300:item['w5'].add(wallet)
+            if seconds<=900:item['w15'].add(wallet)
+            if seconds<=1800:
+                item['w30'].add(wallet)
+                if tx_rel.get(row['tx_hash'])!='routed':item['direct30'].add(wallet)
+                if len(item['proof'])<10:item['proof'].append({'wallet':wallet,'tx_hash':row['tx_hash'],'block':row['block_number'],'timestamp':row['event_timestamp'],'relation':tx_rel.get(row['tx_hash']) or 'unknown','win_rate':profitable[wallet]['win_rate'],'realized_assets':profitable[wallet]['realized_assets']})
         launches = {r['asset']: r['created_block'] for r in db.execute('SELECT asset,MIN(created_block) created_block FROM watches WHERE asset IS NOT NULL GROUP BY asset')}
         candidates = {}
         for row in recent:
@@ -118,6 +134,9 @@ def read(dbpath, asset=None, offset=0):
             ws=wallet_signal.get(c['id'],{});cl=cluster_signal.get(c['id'],{})
             c['smart_wallets']=ws.get('smart_wallets',0);c['best_wallet_score']=ws.get('best_wallet_score')
             c['cluster_count']=cl.get('cluster_count',0);c['cluster_members']=cl.get('cluster_members',0)
+            flow=consensus.get(c['id'],{});c['profitable_wallets_5m']=len(flow.get('w5',()))
+            c['profitable_wallets_15m']=len(flow.get('w15',()));c['profitable_wallets_30m']=len(flow.get('w30',()))
+            c['independent_profitable_wallets_30m']=len(flow.get('direct30',()));c['consensus_proof']=flow.get('proof',[])
             market=markets.get(c['id'],{})
             for key in ('symbol','name','quote_symbol','price_quote','price_usd','market_cap_quote','market_cap_usd','liquidity_quote','liquidity_usd','volume_5m_quote','volume_1h_quote','volume_24h_quote','change_5m','change_1h','change_6h','change_24h','source','status'):
                 c['market_'+key if key in ('source','status') else key]=market.get(key)
