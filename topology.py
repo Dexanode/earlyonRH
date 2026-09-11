@@ -131,8 +131,11 @@ def project_row(db, row):
         observation(db, 'MARKET_GRADUATED', row['asset'], 'pons_v2', row, values)
 
 
-def project(db, limit=2000):
+def project(db, limit=100):
     ensure_schema(db)
+    # Never carry registry/schema writes into the projection batch. A large
+    # historical projection must yield frequently to the head listener.
+    db.commit()
     rows = db.execute('''SELECT e.* FROM events e LEFT JOIN topology_processed p
       ON p.tx_hash=e.tx_hash AND p.log_index=e.log_index
       WHERE p.tx_hash IS NULL ORDER BY e.block_number,e.log_index LIMIT ?''', (limit,)).fetchall()
