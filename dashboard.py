@@ -145,13 +145,16 @@ def read(dbpath, asset=None, offset=0):
                 e['explorer_url']='https://robinhoodchain.blockscout.com/tx/'+e['tx_hash']
                 events.append(e)
             if 'wallet_asset_stats' in tables and 'wallet_profiles' in tables:
-                wallets=[dict(r) for r in db.execute('SELECT s.*,p.smart_score,p.assets,p.early_assets,p.buys total_buys,p.sells total_sells FROM wallet_asset_stats s JOIN wallet_profiles p ON p.wallet=s.wallet WHERE s.asset=? ORDER BY p.smart_score DESC,s.buys+s.sells DESC LIMIT 50',(asset,))]
+                pnl_join='LEFT JOIN wallet_asset_pnl ap ON ap.asset=s.asset AND ap.wallet=s.wallet LEFT JOIN wallet_performance wp ON wp.wallet=s.wallet' if {'wallet_asset_pnl','wallet_performance'}.issubset(tables) else ''
+                pnl_cols=',ap.realized_pnl_quote,ap.quote_symbol pnl_quote_symbol,ap.position_tokens,wp.win_rate,wp.realized_assets,wp.realized_by_quote,wp.coverage pnl_coverage' if pnl_join else ''
+                wallets=[dict(r) for r in db.execute(f'SELECT s.*,p.smart_score,p.assets,p.early_assets,p.buys total_buys,p.sells total_sells{pnl_cols} FROM wallet_asset_stats s JOIN wallet_profiles p ON p.wallet=s.wallet {pnl_join} WHERE s.asset=? ORDER BY p.smart_score DESC,s.buys+s.sells DESC LIMIT 50',(asset,))]
             if 'wallet_clusters' in tables:clusters=[dict(r) for r in db.execute('SELECT * FROM wallet_clusters WHERE asset=? ORDER BY members DESC,transactions DESC',(asset,))]
         alerts=[]
         if 'alerts' in tables:
             for row in db.execute('SELECT * FROM alerts ORDER BY id DESC LIMIT 100'):
                 item=dict(row);item['evidence']=json.loads(item['evidence']);alerts.append(item)
         health.update(wallet_profiler_heartbeat=meta.get('wallet_profiler_heartbeat'),wallet_profiler_age_seconds=age(meta.get('wallet_profiler_heartbeat')),wallet_profiles=int(meta.get('wallet_profiles','0')),wallet_clusters=int(meta.get('wallet_clusters','0')))
+        health.update(wallet_pnl_heartbeat=meta.get('wallet_pnl_heartbeat'),wallet_pnl_age_seconds=age(meta.get('wallet_pnl_heartbeat')),wallet_pnl_wallets=int(meta.get('wallet_pnl_wallets','0')))
         health.update(market_heartbeat=meta.get('market_heartbeat'),market_age_seconds=age(meta.get('market_heartbeat')),market_assets=int(meta.get('market_assets','0')))
         return {'health':health,'candidates':ranked,'events':events,'wallets':wallets,'clusters':clusters,'alerts':alerts,'has_more':has_more,'offset':offset,'sample_limit':5000,
                 'score_model': {'version':2,'meaning':'Screening evidence only; not a return prediction or buy recommendation.','sample':'Latest 5,000 stored events.','components':['activity score','budgeted sender attribution','contract screening'],'limitations':['Safety screening is not a source-code audit.','Unknown capabilities receive no safety points.','No USD liquidity, holder history, social, or profitable-wallet history.']}}

@@ -30,7 +30,55 @@ def schema(db):
         asset TEXT NOT NULL, cluster_key TEXT NOT NULL, kind TEXT NOT NULL,
         members INTEGER NOT NULL, transactions INTEGER NOT NULL,
         updated_at TEXT NOT NULL, PRIMARY KEY(asset,cluster_key,kind));
+      CREATE TABLE IF NOT EXISTS wallet_asset_pnl(
+        asset TEXT NOT NULL, wallet TEXT NOT NULL, quote_symbol TEXT,
+        position_tokens REAL NOT NULL, cost_basis_quote REAL NOT NULL,
+        realized_pnl_quote REAL NOT NULL, buy_quote REAL NOT NULL,
+        sell_quote REAL NOT NULL, matched_sells INTEGER NOT NULL,
+        coverage TEXT NOT NULL, PRIMARY KEY(asset,wallet));
+      CREATE INDEX IF NOT EXISTS wallet_asset_pnl_asset ON wallet_asset_pnl(asset);
+      CREATE TABLE IF NOT EXISTS wallet_performance(
+        wallet TEXT PRIMARY KEY, updated_at TEXT NOT NULL, realized_assets INTEGER NOT NULL,
+        wins INTEGER NOT NULL, losses INTEGER NOT NULL, win_rate REAL,
+        realized_by_quote TEXT NOT NULL, coverage TEXT NOT NULL);
     ''')
+
+
+def rebuild_pnl(db, limit=20000):
+    tables={r[0] for r in db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+    if 'market_snapshots' not in tables:return 0
+    markets={r['asset']:dict(r) for r in db.execute('SELECT asset,decimals,quote_decimals,quote_symbol FROM market_snapshots WHERE decimals IS NOT NULL AND quote_decimals IS NOT NULL')}
+    rows=db.execute("SELECT asset,name,decoded FROM events WHERE asset IS NOT NULL AND name IN ('CurveBuy','CurveSell') ORDER BY block_number DESC,log_index DESC LIMIT ?",(limit,)).fetchall()[::-1]
+    states=defaultdict(lambda:{'qty':0.0,'cost':0.0,'realized':0.0,'buy_quote':0.0,'sell_quote':0.0,'matched_sells':0})
+    for row in rows:
+        market=markets.get(row['asset'])
+        if not market:continue
+        values=json.loads(row['decoded']);buy=row['name']=='CurveBuy';wallet=values.get('buyer') if buy else values.get('seller')
+        if not wallet:continue
+        s=states[(row['asset'],wallet.lower())];td=10**market['decimals'];qd=10**market['quote_decimals']
+        if buy:
+            tokens=int(values.get('tokensOut') or 0)/td;quote=int(values.get('quoteIn') or 0)/qd
+            s['qty']+=tokens;s['cost']+=quote;s['buy_quote']+=quote
+        else:
+            tokens=int(values.get('tokensIn') or 0)/td;proceeds=int(values.get('quoteOut') or 0)/qd;s['sell_quote']+=proceeds
+            matched=min(s['qty'],tokens)
+            if matched>0 and tokens>0:
+                basis=s['cost']/s['qty']*matched if s['qty'] else 0;s['realized']+=proceeds*(matched/tokens)-basis
+                s['qty']-=matched;s['cost']=max(0,s['cost']-basis);s['matched_sells']+=1
+    performance=defaultdict(lambda:{'assets':0,'wins':0,'losses':0,'quotes':defaultdict(float)})
+    stamp=now()
+    with db:
+        db.execute('DELETE FROM wallet_asset_pnl');db.execute('DELETE FROM wallet_performance')
+        for (asset,wallet),s in states.items():
+            quote=markets[asset]['quote_symbol'] or markets[asset].get('quote_token') or 'quote'
+            db.execute('INSERT INTO wallet_asset_pnl VALUES(?,?,?,?,?,?,?,?,?,?)',(asset,wallet,quote,s['qty'],s['cost'],s['realized'],s['buy_quote'],s['sell_quote'],s['matched_sells'],'listener-window'))
+            if s['matched_sells']:
+                p=performance[wallet];p['assets']+=1;p['wins']+=s['realized']>0;p['losses']+=s['realized']<0;p['quotes'][quote]+=s['realized']
+        for wallet,p in performance.items():
+            decided=p['wins']+p['losses'];rate=round(100*p['wins']/decided,1) if decided else None
+            db.execute('INSERT INTO wallet_performance VALUES(?,?,?,?,?,?,?,?)',(wallet,stamp,p['assets'],p['wins'],p['losses'],rate,json.dumps({k:round(v,8) for k,v in p['quotes'].items()}),'listener-window'))
+        set_meta(db,'wallet_pnl_wallets',len(performance));set_meta(db,'wallet_pnl_heartbeat',stamp)
+    return len(performance)
 
 
 def rebuild(db, limit=20000, early_window=500):
@@ -61,6 +109,7 @@ def rebuild(db, limit=20000, early_window=500):
         for (asset,sender),g in routed.items():
             if len(g['members'])>=2:db.execute('INSERT INTO wallet_clusters VALUES(?,?,?,?,?,?)',(asset,sender,'shared-routed-sender',len(g['members']),g['tx'],stamp))
         set_meta(db,'wallet_profiler_heartbeat',stamp);set_meta(db,'wallet_profiles',len(profiles));set_meta(db,'wallet_clusters',sum(len(g['members'])>=2 for g in routed.values()))
+    rebuild_pnl(db,limit)
     return len(profiles)
 
 
