@@ -2,6 +2,23 @@
 
 Prototype read-only untuk chain 4663, dengan dashboard radar, detail kandidat, dan data health. Listener menemukan event Pons V1/V2 dan Uniswap V4 langsung dari RPC, menyimpan receipt dan timeline ke SQLite. WebSocket `newHeads` membangunkan collector; `eth_getLogs` mengambil rentang lengkap dan menangani recovery. Ini bukan trading bot atau klaim keunggulan latency.
 
+## Birth & Topology
+
+Service `topology` memproyeksikan event listener ke penyimpanan append-only:
+
+- `protocol_sources` menunjukkan sensor active, partial, atau planned;
+- `topology_entities` menyimpan token, pool, curve, wallet, dan hook;
+- `topology_edges` menyimpan hubungan seperti `deployed`, `trades_on`, `paired_with`, dan `uses_hook`;
+- `topology_observations` menyimpan market birth, pool birth, dan graduation beserta transaksi buktinya.
+
+Jalankan service ini bersama live stack. Hasilnya tampil pada halaman **Birth Feed**:
+
+```sh
+docker compose up -d --build listener-live topology dashboard alerts wallet-profiler market-normalizer
+```
+
+Adapter yang belum mengumpulkan data ditampilkan sebagai `planned`, sehingga daftar coverage tidak mengklaim sumber tersebut sudah live.
+
 ## Jalankan lokal / VPS
 
 Memerlukan Python 3.11+ dan endpoint Robinhood mainnet. Dari folder ini:

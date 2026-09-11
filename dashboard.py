@@ -59,7 +59,7 @@ def calibration(db, tables):
 
 
 def read(dbpath, asset=None, offset=0):
-    empty = {'health': {'state': 'waiting', 'reason': 'Database listener belum tersedia.'}, 'candidates': [], 'events': [], 'sample_limit': 5000}
+    empty = {'health': {'state': 'waiting', 'reason': 'Database listener belum tersedia.'}, 'candidates': [], 'events': [], 'births': [], 'protocols': [], 'sample_limit': 5000}
     if not Path(dbpath).exists(): return empty
     db = sqlite3.connect(Path(dbpath).resolve().as_uri()+'?mode=ro', uri=True, timeout=3)
     db.row_factory = sqlite3.Row
@@ -202,7 +202,15 @@ def read(dbpath, asset=None, offset=0):
         health.update(wallet_profiler_heartbeat=meta.get('wallet_profiler_heartbeat'),wallet_profiler_age_seconds=age(meta.get('wallet_profiler_heartbeat')),wallet_profiles=int(meta.get('wallet_profiles','0')),wallet_clusters=int(meta.get('wallet_clusters','0')))
         health.update(wallet_pnl_heartbeat=meta.get('wallet_pnl_heartbeat'),wallet_pnl_age_seconds=age(meta.get('wallet_pnl_heartbeat')),wallet_pnl_wallets=int(meta.get('wallet_pnl_wallets','0')))
         health.update(market_heartbeat=meta.get('market_heartbeat'),market_age_seconds=age(meta.get('market_heartbeat')),market_assets=int(meta.get('market_assets','0')))
-        return {'health':health,'candidates':ranked,'events':events,'wallets':wallets,'clusters':clusters,'alerts':alerts,'calibration':calibration(db,tables),'has_more':has_more,'offset':offset,'sample_limit':5000,
+        protocols=[dict(r) for r in db.execute('SELECT * FROM protocol_sources ORDER BY status,name')] if 'protocol_sources' in tables else []
+        births=[]
+        if 'topology_observations' in tables:
+            for row in db.execute("SELECT * FROM topology_observations WHERE observation_type IN ('NEW_MARKET_BIRTH','NEW_POOL_BIRTH','MARKET_GRADUATED') ORDER BY event_timestamp DESC,id DESC LIMIT 100"):
+                item=dict(row);item['payload']=json.loads(item['payload']);item['explorer_url']='https://robinhoodchain.blockscout.com/tx/'+item['tx_hash'];births.append(item)
+        health.update(topology_heartbeat=meta.get('topology_heartbeat'),topology_age_seconds=age(meta.get('topology_heartbeat')),
+                      topology_entities=int(meta.get('topology_entities','0')),topology_edges=int(meta.get('topology_edges','0')),
+                      topology_births=int(meta.get('topology_births','0')))
+        return {'health':health,'candidates':ranked,'events':events,'wallets':wallets,'clusters':clusters,'alerts':alerts,'births':births,'protocols':protocols,'calibration':calibration(db,tables),'has_more':has_more,'offset':offset,'sample_limit':5000,
                 'score_model': {'version':2,'meaning':'Screening evidence only; not a return prediction or buy recommendation.','sample':'Latest 5,000 stored events.','components':['activity score','budgeted sender attribution','contract screening'],'limitations':['Safety screening is not a source-code audit.','Unknown capabilities receive no safety points.','No USD liquidity, holder history, social, or profitable-wallet history.']}}
     finally: db.close()
 
