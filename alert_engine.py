@@ -118,26 +118,31 @@ def deliver(db, token=None, chat_id=None, limit=10):
 def matches(c):
     out=[]
     identified=bool((c.get('symbol') or '').strip() or (c.get('name') or '').strip()) and c.get('market_status') not in (None,'unknown')
+    fresh_alpha=(identified and c.get('age_blocks') is not None and c['age_blocks']<=3000
+                 and c.get('buys_5m',0)>=2 and (c.get('last_trade_age_seconds') is None or c['last_trade_age_seconds']<=300)
+                 and not c.get('dev_exit_detected') and c['safety_status']!='higher-risk')
     if c['safety_status']=='higher-risk':
         out.append(('contract-risk','critical','Contract risk terdeteksi',c.get('safety_score') or 0))
-    if identified and c.get('profitable_wallets_30m',0)>=3 and c.get('profitable_wallets_15m',0)>=2 and c.get('independent_profitable_wallets_30m',0)>=2 and c['safety_status']!='higher-risk':
+    if c.get('dev_exit_detected'):
+        out.append(('dev-exit','critical','Deployer sell terdeteksi',0))
+    if fresh_alpha and c.get('profitable_wallets_30m',0)>=3 and c.get('profitable_wallets_15m',0)>=2 and c.get('independent_profitable_wallets_30m',0)>=2:
         score=min(100,55+c['profitable_wallets_5m']*8+c['profitable_wallets_15m']*5+c['independent_profitable_wallets_30m']*3)
         out.append(('smart-money-consensus','high','Profitable-wallet consensus terdeteksi',score))
-    if identified and c.get('profitable_wallets_30m',0)>=2 and c.get('smart_wallets',0)>=2 and (c.get('conviction_score') or 0)>=55 and c['safety_status']=='screened' and c['buys']>=5:
+    if fresh_alpha and c.get('profitable_wallets_30m',0)>=2 and c.get('smart_wallets',0)>=2 and (c.get('conviction_score') or 0)>=55 and c['safety_status']=='screened' and c['buys']>=5:
         out.append(('smart-wallet-entry','high','Beberapa early wallet masuk',c['conviction_score']))
-    if identified and c.get('age_blocks') is not None and c['age_blocks']<=3000 and c.get('buys_5m',0)>=2 and c['safety_status']!='higher-risk' and c.get('ordered_repeat_wallets',0)>=2 and c.get('increasing_size_wallets',0)>=1 and c.get('retained_wallets',0)>=2:
+    if fresh_alpha and c.get('ordered_repeat_wallets',0)>=2 and c.get('increasing_size_wallets',0)>=1 and c.get('retained_wallets',0)>=2:
         score=min(100,50+c['ordered_repeat_wallets']*6+c['increasing_size_wallets']*5+c.get('profitable_wallets_30m',0)*4)
         out.append(('repeat-qualified-flow','high','Repeat qualified flow terdeteksi',score))
-    if identified and c.get('age_blocks') is not None and c['age_blocks']<=3000 and c.get('buys_5m',0)>=2 and c['safety_status']!='higher-risk' and c.get('qualified_migrating_wallets_5m',0)>=2 and c.get('migration_sources',0)>=1:
+    if fresh_alpha and c.get('qualified_migrating_wallets_5m',0)>=2 and c.get('migration_sources',0)>=1:
         score=min(100,60+c['qualified_migrating_wallets_5m']*8+c['migration_sources']*2)
         out.append(('capital-rotation','high','Rotasi modal masuk terdeteksi',score))
-    if c.get('cluster_count',0)>0 and c.get('cluster_members',0)>=3 and c['buys']>=5:
+    if fresh_alpha and c.get('cluster_count',0)>0 and c.get('cluster_members',0)>=3 and c['buys']>=5:
         out.append(('coordinated-flow','medium','Flow terkoordinasi terdeteksi',c['activity_score']))
-    if (c.get('conviction_score') or 0)>=70 and c['safety_status']=='screened' and c['unique_senders']>=3 and c['buys']>=5 and c['buy_sell_ratio']>=1.5 and c['activity_acceleration']>=1.2 and c['routed_share']<=.75:
+    if fresh_alpha and (c.get('conviction_score') or 0)>=70 and c['safety_status']=='screened' and c['unique_senders']>=3 and c['buys']>=5 and c['buy_sell_ratio']>=1.5 and c['activity_acceleration']>=1.2 and c['routed_share']<=.75:
         out.append(('trench-candidate','high','Kandidat trench terkonfirmasi',c['conviction_score']))
-    elif (c.get('conviction_score') or 0)>=58 and c['safety_status']=='screened' and c['unique_senders']>=2 and c['buys']>=5 and c['activity_acceleration']>=1.5:
+    elif fresh_alpha and (c.get('conviction_score') or 0)>=58 and c['safety_status']=='screened' and c['unique_senders']>=2 and c['buys']>=5 and c['activity_acceleration']>=1.5:
         out.append(('momentum-watch','medium','Momentum awal mulai terbentuk',c['conviction_score']))
-    elif c['activity_score']>=55 and c['safety_status']=='screened' and c['unique_buyers']>=3 and c['buys']>=5 and (c.get('age_blocks') is None or c['age_blocks']<=3000):
+    elif fresh_alpha and c['activity_score']>=55 and c['safety_status']=='screened' and c['unique_buyers']>=3 and c['buys']>=5:
         out.append(('early-watch','low','Aktivitas awal layak dipantau',c['activity_score']))
     return out
 
@@ -179,7 +184,7 @@ def source_wallets(db, asset, limit=5, preferred=None):
 
 
 def evidence(c, db=None):
-    keys=('protocol','activity_score','conviction_score','safety_score','safety_status','buys','sells','buys_5m','sells_5m','unique_buyers','repeat_buyers','unique_senders','routed_share','smart_wallets','best_wallet_score','cluster_count','cluster_members','ordered_repeat_wallets','increasing_size_wallets','retained_wallets','provisional_funding_roots','shared_sender_wallets','shared_sender_clusters','migrating_wallets','migration_sources','fastest_migration_seconds','qualified_migrating_wallets_5m','activity_acceleration','age_blocks','buy_sell_ratio','safety_findings','symbol','name','quote_symbol','quote_decimals','price_quote','price_usd','market_cap_quote','market_cap_usd','liquidity_quote','liquidity_usd','volume_5m_quote','volume_1h_quote','volume_24h_quote','change_5m','change_1h','change_6h','change_24h','market_source','market_status','profitable_wallets_5m','profitable_wallets_15m','profitable_wallets_30m','independent_profitable_wallets_30m','unattributed_profitable_wallets_30m','consensus_proof')
+    keys=('protocol','activity_score','conviction_score','safety_score','safety_status','buys','sells','buys_5m','sells_5m','last_trade_age_seconds','dev_buy_count','dev_sell_count','dev_exit_detected','deployer','unique_buyers','repeat_buyers','unique_senders','routed_share','smart_wallets','best_wallet_score','cluster_count','cluster_members','ordered_repeat_wallets','increasing_size_wallets','retained_wallets','provisional_funding_roots','shared_sender_wallets','shared_sender_clusters','migrating_wallets','migration_sources','fastest_migration_seconds','qualified_migrating_wallets_5m','activity_acceleration','age_blocks','buy_sell_ratio','safety_findings','symbol','name','quote_symbol','quote_decimals','price_quote','price_usd','market_cap_quote','market_cap_usd','liquidity_quote','liquidity_usd','volume_5m_quote','volume_1h_quote','volume_24h_quote','change_5m','change_1h','change_6h','change_24h','market_source','market_status','profitable_wallets_5m','profitable_wallets_15m','profitable_wallets_30m','independent_profitable_wallets_30m','unattributed_profitable_wallets_30m','consensus_proof')
     out={k:c.get(k) for k in keys}
     preferred=[p['wallet'] for p in c.get('consensus_proof',[])]
     wallets=source_wallets(db,c['id'],preferred=preferred) if db else []
@@ -193,12 +198,13 @@ def evaluate(db, candidates, cooldown=1800, improvement=8):
     for c in candidates:
         for rule,severity,title,score in matches(c):
             key=(c['id'],rule);seen.add(key)
+            prior=db.execute('SELECT 1 FROM alerts WHERE asset=? AND rule=? LIMIT 1',key).fetchone()
             old=db.execute('SELECT active,last_score,last_alert_at FROM alert_states WHERE asset=? AND rule=?',key).fetchone()
             last_epoch=0
             if old and old['last_alert_at']:
                 try: last_epoch=__import__('datetime').datetime.fromisoformat(old['last_alert_at']).timestamp()
                 except ValueError: pass
-            should=not old or not old['active'] or (epoch-last_epoch>=cooldown and score-(old['last_score'] or 0)>=improvement)
+            should=not prior
             stamp=now()
             with db:
                 if should:

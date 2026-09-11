@@ -116,7 +116,7 @@ def read(dbpath, asset=None, offset=0):
         for row in recent:
             key = row['asset']
             if not key: continue
-            c = candidates.setdefault(key, {'id':key,'kind':'pool' if row['kind']=='v4' else 'token','protocol':row['kind'],'events':0,'buys':0,'sells':0,'buys_5m':0,'sells_5m':0,'liquidity_changes':0,'last_block':row['block_number'],'last_seen':row['observed_at'],'first_seen_in_sample':row['observed_at'],'latest_event':row['name'],'currencies':[],'buyers':{},'events_last_100':0,'events_previous_400':0,'launch_block':launches.get(key)})
+            c = candidates.setdefault(key, {'id':key,'kind':'pool' if row['kind']=='v4' else 'token','protocol':row['kind'],'events':0,'buys':0,'sells':0,'buys_5m':0,'sells_5m':0,'liquidity_changes':0,'last_block':row['block_number'],'last_trade_timestamp':None,'last_seen':row['observed_at'],'first_seen_in_sample':row['observed_at'],'latest_event':row['name'],'currencies':[],'buyers':{},'trade_wallets':[],'events_last_100':0,'events_previous_400':0,'launch_block':launches.get(key)})
             c['events'] += 1
             c['first_seen_in_sample'] = min(c['first_seen_in_sample'],row['observed_at'])
             c['buys'] += row['name']=='CurveBuy'
@@ -131,6 +131,10 @@ def read(dbpath, asset=None, offset=0):
             values=json.loads(row['decoded'])
             buyer=values.get('buyer') if row['name']=='CurveBuy' else None
             if buyer: c['buyers'][buyer]=c['buyers'].get(buyer,0)+1
+            if row['name'] in ('CurveBuy','CurveSell'):
+                wallet=values.get('buyer') if row['name']=='CurveBuy' else values.get('seller')
+                c['last_trade_timestamp']=max(c['last_trade_timestamp'] or 0,row['event_timestamp'] or 0)
+                if wallet:c['trade_wallets'].append((row['name'],wallet.lower()))
             if row['name']=='Initialize':
                 c['currencies']=[values.get('currency0'),values.get('currency1')]
         ranked=[]
@@ -191,6 +195,12 @@ def read(dbpath, asset=None, offset=0):
             c['safety_status']=analysis['safety_status'] if analysis else 'unknown'
             c['safety_findings']=json.loads(analysis['findings']) if analysis else []
             c['deployer']=analysis['deployer'] if analysis else None
+            deployer=(c['deployer'] or '').lower()
+            c['dev_buy_count']=sum(name=='CurveBuy' and wallet==deployer for name,wallet in c['trade_wallets']) if deployer else 0
+            c['dev_sell_count']=sum(name=='CurveSell' and wallet==deployer for name,wallet in c['trade_wallets']) if deployer else 0
+            c['dev_exit_detected']=c['dev_sell_count']>0
+            c['last_trade_age_seconds']=max(0,reference_ts-c['last_trade_timestamp']) if reference_ts and c['last_trade_timestamp'] else None
+            del c['trade_wallets']
             c['owner']=analysis['owner'] if analysis else None
             c['proxy']=bool(analysis and (analysis['implementation'] or analysis['proxy_admin']))
             c['contract_analyzed_at']=analysis['analyzed_at'] if analysis else None
