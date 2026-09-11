@@ -78,13 +78,15 @@ def read(dbpath, asset=None, offset=0):
             if row['name']!='CurveBuy' or not row['asset']:continue
             wallet=(json.loads(row['decoded']).get('buyer') or '').lower()
             if wallet not in profitable:continue
-            item=consensus.setdefault(row['asset'],{'w5':set(),'w15':set(),'w30':set(),'direct30':set(),'proof':[]})
+            item=consensus.setdefault(row['asset'],{'w5':set(),'w15':set(),'w30':set(),'direct30':set(),'unknown30':set(),'proof':[]})
             seconds=max(0,reference_ts-(row['event_timestamp'] or 0))
             if seconds<=300:item['w5'].add(wallet)
             if seconds<=900:item['w15'].add(wallet)
             if seconds<=1800:
                 item['w30'].add(wallet)
-                if tx_rel.get(row['tx_hash'])!='routed':item['direct30'].add(wallet)
+                relation=tx_rel.get(row['tx_hash'])
+                if relation=='direct':item['direct30'].add(wallet)
+                elif relation not in ('direct','routed'):item['unknown30'].add(wallet)
                 if len(item['proof'])<10:item['proof'].append({'wallet':wallet,'tx_hash':row['tx_hash'],'block':row['block_number'],'timestamp':row['event_timestamp'],'relation':tx_rel.get(row['tx_hash']) or 'unknown','win_rate':profitable[wallet]['win_rate'],'realized_assets':profitable[wallet]['realized_assets']})
         launches = {r['asset']: r['created_block'] for r in db.execute('SELECT asset,MIN(created_block) created_block FROM watches WHERE asset IS NOT NULL GROUP BY asset')}
         candidates = {}
@@ -136,7 +138,7 @@ def read(dbpath, asset=None, offset=0):
             c['cluster_count']=cl.get('cluster_count',0);c['cluster_members']=cl.get('cluster_members',0)
             flow=consensus.get(c['id'],{});c['profitable_wallets_5m']=len(flow.get('w5',()))
             c['profitable_wallets_15m']=len(flow.get('w15',()));c['profitable_wallets_30m']=len(flow.get('w30',()))
-            c['independent_profitable_wallets_30m']=len(flow.get('direct30',()));c['consensus_proof']=flow.get('proof',[])
+            c['independent_profitable_wallets_30m']=len(flow.get('direct30',()));c['unattributed_profitable_wallets_30m']=len(flow.get('unknown30',()));c['consensus_proof']=flow.get('proof',[])
             market=markets.get(c['id'],{})
             for key in ('symbol','name','quote_symbol','price_quote','price_usd','market_cap_quote','market_cap_usd','liquidity_quote','liquidity_usd','volume_5m_quote','volume_1h_quote','volume_24h_quote','change_5m','change_1h','change_6h','change_24h','source','status'):
                 c['market_'+key if key in ('source','status') else key]=market.get(key)
