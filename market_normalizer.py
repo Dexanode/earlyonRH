@@ -11,6 +11,7 @@ from listener import RPC, RpcError, database, now, set_meta
 
 LOG=logging.getLogger('market-normalizer')
 DECIMALS='0x313ce567';SYMBOL='0x95d89b41';NAME='0x06fdde03';SUPPLY='0x18160ddd';BALANCE='0x70a08231'
+ZERO='0x'+'0'*40
 
 
 def schema(db):
@@ -87,12 +88,13 @@ def normalize_asset(db,rpc,asset):
     if not launch or not watch:return False
     quote=json.loads(launch['decoded']).get('pairToken')
     if not quote:return False
-    token=metadata(db,rpc,asset);quote_meta=metadata(db,rpc,quote)
+    token=metadata(db,rpc,asset)
+    quote_meta={'symbol':'ETH','decimals':18} if quote.lower()==ZERO else metadata(db,rpc,quote)
     if token.get('decimals') is None or quote_meta.get('decimals') is None:return False
     rows=db.execute("SELECT event_timestamp,decoded FROM events WHERE asset=? AND name IN ('CurveBuy','CurveSell') ORDER BY block_number,log_index",(asset,)).fetchall()
     metrics=calculate(rows,token['decimals'],quote_meta['decimals'],int(time.time()))
     if not metrics:return False
-    reserve_raw=uint(call(rpc,quote,BALANCE+'0'*24+watch['address'][2:]))
+    reserve_raw=uint(rpc.call('eth_getBalance',[watch['address'],'latest'])) if quote.lower()==ZERO else uint(call(rpc,quote,BALANCE+'0'*24+watch['address'][2:]))
     liquidity=reserve_raw/(10**quote_meta['decimals']) if reserve_raw is not None else None
     supply=int(token['total_supply'])/(10**token['decimals']) if token.get('total_supply') else None
     mc=metrics['price_quote']*supply if supply is not None else None

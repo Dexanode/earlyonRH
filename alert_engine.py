@@ -118,7 +118,7 @@ def deliver(db, token=None, chat_id=None, limit=10):
 def matches(c):
     out=[]
     identified=bool((c.get('symbol') or '').strip() or (c.get('name') or '').strip()) and c.get('market_status') not in (None,'unknown')
-    fresh_alpha=(identified and bool(c.get('deployer')) and c.get('age_blocks') is not None and c['age_blocks']<=3000
+    fresh_alpha=(identified and bool(c.get('deployer')) and c.get('age_blocks') is not None and c['age_blocks']<=15000
                  and c.get('buys_5m',0)>=2 and (c.get('last_trade_age_seconds') is None or c['last_trade_age_seconds']<=300)
                  and not c.get('dev_exit_detected') and c.get('deployer_launch_count',0)<3 and c['safety_status']!='higher-risk')
     if c['safety_status']=='higher-risk':
