@@ -28,5 +28,17 @@ class TopologyTests(unittest.TestCase):
         project(self.db)
         self.assertEqual(self.db.execute("SELECT COUNT(*) FROM topology_edges WHERE source=?",(pool,)).fetchone()[0],3)
         self.assertEqual(self.db.execute("SELECT observation_type FROM topology_observations").fetchone()[0],'NEW_POOL_BIRTH')
+    def test_unknown_factory_pool_birth_builds_generic_topology(self):
+        factory='0x'+'5'*40;pool='0x'+'6'*40;t0='0x'+'7'*40;t1='0x'+'8'*40
+        self.add('v3_factory','PoolCreated',factory,pool,{'token0':t0,'token1':t1,'fee':'3000','tickSpacing':'60','pool':pool})
+        project(self.db)
+        self.assertEqual(self.db.execute('SELECT protocol FROM topology_entities WHERE id=?',(pool,)).fetchone()[0],'dex_factories')
+        self.assertEqual(self.db.execute('SELECT COUNT(*) FROM topology_edges WHERE source=? AND relation="contains"',(pool,)).fetchone()[0],2)
+    def test_erc6551_account_links_to_collection(self):
+        registry='0x'+'9'*40;account='0x'+'a'*40;collection='0x'+'b'*40
+        self.add('erc6551_registry','ERC6551AccountCreated',registry,account,{'account':account,'implementation':'0x'+'c'*40,'salt':'0x'+'0'*64,'chainId':'4663','tokenContract':collection,'tokenId':'44'})
+        project(self.db)
+        row=self.db.execute('SELECT relation,target FROM topology_edges WHERE source=?',(collection,)).fetchone()
+        self.assertEqual(tuple(row),('owns_account',account))
 
 if __name__=='__main__':unittest.main()

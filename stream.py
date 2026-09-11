@@ -15,7 +15,8 @@ from listener import CHAIN, REGISTRY, RPC, RpcError, database, get_meta, set_met
 
 LOG = logging.getLogger('stream')
 FACTORIES = {a: k for a, k in REGISTRY.items() if k.startswith('pons_')}
-TOPICS = list(dict.fromkeys(s['topic'] for k in ('pons_v1', 'pons_v2', 'curve', 'v3_pool') for s in SPECS[k]))
+TOPICS = list(dict.fromkeys(s['topic'] for k in ('pons_v1', 'pons_v2', 'curve', 'v3_pool', 'v2_factory', 'v3_factory', 'erc6551_registry') for s in SPECS[k]))
+GENERIC_BIRTH_TOPICS = {s['topic']: kind for kind in ('pons_v1','pons_v2','v2_factory','v3_factory','erc6551_registry') for s in SPECS[kind] if s['name'] in ('TokenLaunched','PairCreated','PoolCreated','ERC6551AccountCreated')}
 MAX_AUTO_RECOVERY = 100
 
 
@@ -107,6 +108,8 @@ class StreamStore:
                     continue
                 address = row['address'].lower()
                 kind = FACTORIES.get(address) or watches.get(address, {}).get('kind')
+                if not kind and row.get('topics'):
+                    kind = GENERIC_BIRTH_TOPICS.get(row['topics'][0].lower())
                 if kind:
                     name, values = decode(kind, row)
                     if name == 'TokenLaunched':
@@ -114,7 +117,12 @@ class StreamStore:
                         w = dict(address=child, kind='v3_pool' if kind == 'pons_v1' else 'curve', asset=values['token'], created_block=n)
                         watches[child] = w
                         self.db.execute('INSERT OR IGNORE INTO watches VALUES (?,?,?,?)', tuple(w.values()))
-                    asset = values.get('token') or watches.get(address, {}).get('asset')
+                    if name in ('PairCreated','PoolCreated'):
+                        child=values.get('pair') or values.get('pool')
+                        w=dict(address=child,kind='v3_pool',asset=child,created_block=n)
+                        watches[child]=w
+                        self.db.execute('INSERT OR IGNORE INTO watches VALUES (?,?,?,?)',tuple(w.values()))
+                    asset = values.get('token') or values.get('pair') or values.get('pool') or values.get('account') or watches.get(address, {}).get('asset')
                     values['_validation'] = 'provider-stream-confirmed-3-heads'
                     self.db.execute('INSERT OR IGNORE INTO events VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)',
                         (row['transactionHash'], idx, n, row['blockHash'], address, kind, name, asset,

@@ -10,13 +10,14 @@ from listener import database, get_meta, now, set_meta
 PROTOCOLS = (
     ('pons_v1', 'Pons V1', 'launchpad', 'active', 'listener', 'Factory launch and V3 child pool'),
     ('pons_v2', 'Pons V2', 'launchpad', 'active', 'listener', 'Factory launch and bonding curve'),
-    ('uniswap_v4', 'Uniswap V4', 'dex', 'active', 'listener', 'Global PoolManager initialization and liquidity'),
+    ('dex_factories', 'Permissionless V2/V3 factories', 'dex', 'active', 'signature-sensor', 'PairCreated and PoolCreated across any emitter'),
+    ('uniswap_v4', 'Uniswap V4', 'dex', 'partial', 'listener', 'Registered PoolManager initialization and liquidity'),
     ('hood_fun', 'hood.fun', 'launchpad', 'planned', 'adapter', 'Contract registry requires verification'),
     ('hood_dev', 'hood.dev', 'launchpad', 'planned', 'adapter', 'V3 single-sided launch topology'),
-    ('hoodpad', 'HoodPad', 'launchpad', 'planned', 'adapter', 'Pons V2 and V4 hook topology'),
+    ('hoodpad', 'HoodPad', 'launchpad', 'partial', 'signature-sensor', 'Pons V2-compatible factory births; strategy adapter pending'),
     ('erc721', 'ERC-721', 'nft', 'planned', 'standard', 'Mint and transfer sensor'),
     ('erc1155', 'ERC-1155', 'nft', 'planned', 'standard', 'Mint and transfer sensor'),
-    ('erc6551', 'ERC-6551', 'nft-account', 'planned', 'standard', 'Token-bound account registry'),
+    ('erc6551', 'ERC-6551', 'nft-account', 'active', 'signature-sensor', 'Token-bound account creation across registry emitters'),
     ('stonkbrokers', 'StonkBrokers / Anvil', 'nft-market', 'planned', 'adapter', 'Collection, TBA, AMM and token linkage'),
     ('stock_tokens', 'Stock Token registry', 'financial', 'planned', 'official-api', 'Canonical deployment and status registry'),
     ('bridges', 'Canonical bridges', 'capital-flow', 'planned', 'adapter', 'Inbound capital migration'),
@@ -111,6 +112,21 @@ def project_row(db, row):
             entity(db, values['hooks'], 'hook', protocol, block, ts, tx)
             edge(db, pool, 'uses_hook', values['hooks'], protocol, block, ts, tx)
         observation(db, 'NEW_POOL_BIRTH', pool, protocol, row, values)
+    elif name in ('PairCreated','PoolCreated'):
+        protocol='dex_factories';pool=values.get('pair') or values.get('pool')
+        entity(db,pool,'pool',protocol,block,ts,tx,attributes={'factory':row['address'],'fee':values.get('fee')})
+        entity(db,row['address'],'factory',protocol,block,ts,tx)
+        edge(db,row['address'],'created',pool,protocol,block,ts,tx)
+        for token in (values.get('token0'),values.get('token1')):
+            entity(db,token,'token',protocol,block,ts,tx)
+            edge(db,pool,'contains',token,protocol,block,ts,tx)
+        observation(db,'NEW_POOL_BIRTH',pool,protocol,row,values)
+    elif name == 'ERC6551AccountCreated':
+        protocol='erc6551';account=values.get('account');collection=values.get('tokenContract')
+        entity(db,account,'token_bound_account',protocol,block,ts,tx,attributes={'tokenId':values.get('tokenId'),'implementation':values.get('implementation')})
+        entity(db,collection,'nft_collection',protocol,block,ts,tx)
+        edge(db,collection,'owns_account',account,protocol,block,ts,tx,attributes={'tokenId':values.get('tokenId')})
+        observation(db,'NEW_TOKEN_BOUND_ACCOUNT',account,protocol,row,values)
     elif name == 'CurveCompleted':
         observation(db, 'MARKET_GRADUATED', row['asset'], 'pons_v2', row, values)
 

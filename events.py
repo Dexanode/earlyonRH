@@ -18,6 +18,9 @@ SPECS = {
     'curve': [event('CurveBuy', 'address buyer indexed,address recipient indexed,uint256 quoteIn,uint256 tokensOut,uint256 fee,uint256 tax'), event('CurveSell', 'address seller indexed,address recipient indexed,uint256 tokensIn,uint256 quoteOut,uint256 fee,uint256 tax'), event('CurveCompleted', 'address recipient,uint256 quoteOut,uint256 tokenOut'), event('CurveBuyRefunded', 'address buyer indexed,uint256 refund')],
     'v3_pool': [event('Swap', 'address sender indexed,address recipient indexed,int256 amount0,int256 amount1,uint160 sqrtPriceX96,uint128 liquidity,int24 tick')],
     'v4': [event('Initialize', 'bytes32 id indexed,address currency0 indexed,address currency1 indexed,uint24 fee,int24 tickSpacing,address hooks,uint160 sqrtPriceX96,int24 tick'), event('ModifyLiquidity', 'bytes32 id indexed,address sender indexed,int24 tickLower,int24 tickUpper,int256 liquidityDelta,bytes32 salt'), event('Swap', 'bytes32 id indexed,address sender indexed,int128 amount0,int128 amount1,uint160 sqrtPriceX96,uint128 liquidity,int24 tick,uint24 fee')],
+    'v2_factory': [event('PairCreated', 'address token0 indexed,address token1 indexed,address pair,uint256 pairCount')],
+    'v3_factory': [event('PoolCreated', 'address token0 indexed,address token1 indexed,uint24 fee indexed,int24 tickSpacing,address pool')],
+    'erc6551_registry': [event('ERC6551AccountCreated', 'address account,address implementation indexed,bytes32 salt,uint256 chainId,address tokenContract indexed,uint256 tokenId indexed')],
 }
 
 
