@@ -112,6 +112,10 @@ def read(dbpath, asset=None, offset=0):
                 elif relation not in ('direct','routed'):item['unknown30'].add(wallet)
                 if len(item['proof'])<10:item['proof'].append({'wallet':wallet,'tx_hash':row['tx_hash'],'block':row['block_number'],'timestamp':row['event_timestamp'],'relation':tx_rel.get(row['tx_hash']) or 'unknown','win_rate':profitable[wallet]['win_rate'],'realized_assets':profitable[wallet]['realized_assets']})
         launches = {r['asset']: r['created_block'] for r in db.execute('SELECT asset,MIN(created_block) created_block FROM watches WHERE asset IS NOT NULL GROUP BY asset')}
+        launch_deployers={}
+        for row in db.execute("SELECT asset,decoded FROM events WHERE name='TokenLaunched' AND asset IS NOT NULL"):
+            deployer=json.loads(row['decoded']).get('deployer')
+            if deployer:launch_deployers[row['asset']]=deployer.lower()
         candidates = {}
         for row in recent:
             key = row['asset']
@@ -194,7 +198,7 @@ def read(dbpath, asset=None, offset=0):
             c['safety_score']=analysis['safety_score'] if analysis else None
             c['safety_status']=analysis['safety_status'] if analysis else 'unknown'
             c['safety_findings']=json.loads(analysis['findings']) if analysis else []
-            c['deployer']=analysis['deployer'] if analysis else None
+            c['deployer']=(analysis['deployer'] if analysis and analysis['deployer'] else launch_deployers.get(c['id']))
             deployer=(c['deployer'] or '').lower()
             c['dev_buy_count']=sum(name=='CurveBuy' and wallet==deployer for name,wallet in c['trade_wallets']) if deployer else 0
             c['dev_sell_count']=sum(name=='CurveSell' and wallet==deployer for name,wallet in c['trade_wallets']) if deployer else 0

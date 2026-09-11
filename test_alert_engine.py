@@ -9,7 +9,7 @@ from wallet_profiler import schema as wallet_schema
 
 
 def candidate(**overrides):
-    c=dict(id='0x'+'1'*40,protocol='pons_v2',symbol='TEST',name='Test Token',market_status='quote-only',activity_score=72,conviction_score=74,safety_score=65,safety_status='screened',safety_findings=[],buys=12,sells=3,buys_5m=3,sells_5m=0,last_trade_age_seconds=30,dev_exit_detected=False,unique_buyers=6,repeat_buyers=2,unique_senders=4,routed_share=.25,activity_acceleration=2,age_blocks=500,buy_sell_ratio=4)
+    c=dict(id='0x'+'1'*40,protocol='pons_v2',symbol='TEST',name='Test Token',market_status='quote-only',deployer='0x'+'d'*40,activity_score=72,conviction_score=74,safety_score=65,safety_status='screened',safety_findings=[],buys=12,sells=3,buys_5m=3,sells_5m=0,last_trade_age_seconds=30,dev_exit_detected=False,unique_buyers=6,repeat_buyers=2,unique_senders=4,routed_share=.25,activity_acceleration=2,age_blocks=500,buy_sell_ratio=4)
     c.update(overrides);return c
 
 
@@ -31,6 +31,7 @@ class AlertTests(unittest.TestCase):
     def test_positive_alpha_is_blocked_after_deployer_sell_or_stale_flow(self):
         self.assertFalse(any(r[0] != 'dev-exit' for r in matches(candidate(dev_exit_detected=True,dev_sell_count=1))))
         self.assertEqual(matches(candidate(buys_5m=0)),[])
+        self.assertEqual(matches(candidate(deployer=None)),[])
     def test_critical_contract_risk(self):
         result=matches(candidate(safety_status='higher-risk',safety_score=10))
         self.assertEqual(result[0][:2],('contract-risk','critical'))
