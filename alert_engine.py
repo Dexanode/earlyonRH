@@ -30,6 +30,8 @@ def matches(c):
         out.append(('contract-risk','critical','Contract risk terdeteksi',c.get('safety_score') or 0))
     if c.get('smart_wallets',0)>=2 and (c.get('conviction_score') or 0)>=55 and c['safety_status']=='screened' and c['buys']>=5:
         out.append(('smart-wallet-entry','high','Beberapa early wallet masuk',c['conviction_score']))
+    elif c.get('smart_wallets',0)>=5 and c['activity_score']>=60 and c['buys']>=20 and c['sells']>=5 and (c.get('age_blocks') is None or c['age_blocks']<=3000):
+        out.append(('smart-wallet-watch','medium','Smart-wallet flow perlu diperiksa',c['activity_score']))
     if c.get('cluster_count',0)>0 and c.get('cluster_members',0)>=3 and c['buys']>=5:
         out.append(('coordinated-flow','medium','Flow terkoordinasi terdeteksi',c['activity_score']))
     if (c.get('conviction_score') or 0)>=70 and c['safety_status']=='screened' and c['unique_senders']>=3 and c['buys']>=5 and c['buy_sell_ratio']>=1.5 and c['activity_acceleration']>=1.2 and c['routed_share']<=.75:
@@ -41,9 +43,39 @@ def matches(c):
     return out
 
 
-def evidence(c):
+def source_wallets(db, asset, limit=5):
+    """Capture the transactions behind a wallet alert without inventing USD/PnL."""
+    tables={r[0] for r in db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+    if not {'wallet_profiles','events'}.issubset(tables): return []
+    profiles={r['wallet']:dict(r) for r in db.execute('SELECT * FROM wallet_profiles WHERE smart_score>=55')}
+    rows=db.execute("SELECT tx_hash,block_number,observed_at,event_timestamp,name,decoded FROM events WHERE asset=? AND name IN ('CurveBuy','CurveSell') ORDER BY block_number,log_index",(asset,)).fetchall()
+    activity=[]
+    for row in rows:
+        values=json.loads(row['decoded']);wallet=(values.get('buyer') if row['name']=='CurveBuy' else values.get('seller'))
+        if wallet and wallet.lower() in profiles:activity.append((row,wallet.lower(),values))
+    latest={}
+    for row,wallet,values in activity:
+        if row['name']=='CurveBuy':latest[wallet]=(row,values)
+    ranked=sorted(latest.items(),key=lambda item:(profiles[item[0]]['smart_score'],item[1][0]['block_number']),reverse=True)[:limit]
+    result=[]
+    for wallet,(buy,values) in ranked:
+        sells=[(r,v) for r,w,v in activity if w==wallet and r['name']=='CurveSell' and r['block_number']>=buy['block_number']]
+        p=profiles[wallet]
+        result.append({'wallet':wallet,'buy_tx':buy['tx_hash'],'buy_block':buy['block_number'],'buy_time':buy['event_timestamp'] or buy['observed_at'],
+          'quote_in_raw':values.get('quoteIn'),'tokens_out_raw':values.get('tokensOut'),'recorded_sells_since_buy':len(sells),
+          'quote_out_raw_since_buy':str(sum(int(v.get('quoteOut') or 0) for _,v in sells)),'smart_score':p['smart_score'],
+          'tracked_assets':p['assets'],'early_assets':p['early_assets'],'tracked_buys':p['buys'],'tracked_sells':p['sells'],
+          'wallet_url':'https://robinhoodchain.blockscout.com/address/'+wallet,'buy_tx_url':'https://robinhoodchain.blockscout.com/tx/'+buy['tx_hash'],
+          'win_rate':None,'realized_pnl_usd':None})
+    return result
+
+
+def evidence(c, db=None):
     keys=('protocol','activity_score','conviction_score','safety_score','safety_status','buys','sells','unique_buyers','repeat_buyers','unique_senders','routed_share','smart_wallets','best_wallet_score','cluster_count','cluster_members','activity_acceleration','age_blocks','buy_sell_ratio','safety_findings')
-    return {k:c.get(k) for k in keys}
+    out={k:c.get(k) for k in keys}
+    out.update(source_wallets=source_wallets(db,c['id']) if db else [],market_data_status='unknown',wallet_pnl_status='unknown',
+               minting_capability='unknown',contract_source_verification='unknown')
+    return out
 
 
 def evaluate(db, candidates, cooldown=1800, improvement=8):
@@ -60,7 +92,7 @@ def evaluate(db, candidates, cooldown=1800, improvement=8):
             stamp=now()
             with db:
                 if should:
-                    payload=evidence(c)
+                    payload=evidence(c,db)
                     cur=db.execute('INSERT INTO alerts(created_at,asset,rule,severity,title,score,evidence) VALUES(?,?,?,?,?,?,?)',(stamp,c['id'],rule,severity,title,score,json.dumps(payload)))
                     emitted.append(cur.lastrowid)
                 db.execute('INSERT INTO alert_states VALUES(?,?,?,?,?) ON CONFLICT(asset,rule) DO UPDATE SET active=1,last_score=excluded.last_score,last_alert_at=COALESCE(excluded.last_alert_at,alert_states.last_alert_at)',(c['id'],rule,1,score,stamp if should else None))
