@@ -145,6 +145,13 @@ def read(dbpath, asset=None, offset=0):
         cluster_signal={}
         if 'wallet_clusters' in tables:
             cluster_signal={r['asset']:dict(r) for r in db.execute('SELECT asset,COUNT(*) cluster_count,MAX(members) cluster_members FROM wallet_clusters GROUP BY asset')}
+        capital_signal={}
+        if 'capital_wallet_asset' in tables:
+            for row in db.execute("SELECT asset,COUNT(*) wallets,SUM(buy_count>=2) ordered_repeat_wallets,SUM(COALESCE(size_trend,0)>1) increasing_size_wallets,SUM(retained_raw!='0') retained_wallets,COUNT(DISTINCT funding_root) provisional_funding_roots,SUM(funding_confidence='observed-shared-sender') shared_sender_wallets FROM capital_wallet_asset GROUP BY asset"):
+                capital_signal[row['asset']]=dict(row)
+        shared_clusters={}
+        if 'capital_clusters' in tables:
+            shared_clusters={r['asset']:r['n'] for r in db.execute("SELECT asset,COUNT(*) n FROM capital_clusters WHERE confidence='observed-shared-sender' AND members>=2 GROUP BY asset")}
         markets={r['asset']:dict(r) for r in db.execute('SELECT * FROM market_snapshots')} if 'market_snapshots' in tables else {}
         for c in candidates.values():
             c['unique_buyers']=len(c['buyers'])
@@ -159,6 +166,10 @@ def read(dbpath, asset=None, offset=0):
             ws=wallet_signal.get(c['id'],{});cl=cluster_signal.get(c['id'],{})
             c['smart_wallets']=ws.get('smart_wallets',0);c['best_wallet_score']=ws.get('best_wallet_score')
             c['cluster_count']=cl.get('cluster_count',0);c['cluster_members']=cl.get('cluster_members',0)
+            cap=capital_signal.get(c['id'],{})
+            for key in ('ordered_repeat_wallets','increasing_size_wallets','retained_wallets','provisional_funding_roots','shared_sender_wallets'):
+                c[key]=cap.get(key,0) or 0
+            c['shared_sender_clusters']=shared_clusters.get(c['id'],0)
             flow=consensus.get(c['id'],{});c['profitable_wallets_5m']=len(flow.get('w5',()))
             c['profitable_wallets_15m']=len(flow.get('w15',()));c['profitable_wallets_30m']=len(flow.get('w30',()))
             c['independent_profitable_wallets_30m']=len(flow.get('direct30',()));c['unattributed_profitable_wallets_30m']=len(flow.get('unknown30',()));c['consensus_proof']=flow.get('proof',[])
@@ -180,7 +191,7 @@ def read(dbpath, asset=None, offset=0):
         health['events_in_sample']=len(recent)
         health['candidates_in_sample']=len(candidates)
         health['decode_errors_in_sample']=sum(r['name']=='DecodeError' for r in recent)
-        events=[]; wallets=[]; clusters=[]; has_more=False
+        events=[]; wallets=[]; clusters=[]; capital_flows=[]; funding_clusters=[]; has_more=False
         if asset:
             rows=db.execute('SELECT * FROM events WHERE asset=? ORDER BY block_number DESC,log_index DESC LIMIT 101 OFFSET ?', (asset,offset)).fetchall()
             has_more=len(rows)>100
@@ -193,6 +204,8 @@ def read(dbpath, asset=None, offset=0):
                 pnl_cols=',ap.realized_pnl_quote,ap.quote_symbol pnl_quote_symbol,ap.position_tokens,wp.win_rate,wp.realized_assets,wp.realized_by_quote,wp.coverage pnl_coverage' if pnl_join else ''
                 wallets=[dict(r) for r in db.execute(f'SELECT s.*,p.smart_score,p.assets,p.early_assets,p.buys total_buys,p.sells total_sells{pnl_cols} FROM wallet_asset_stats s JOIN wallet_profiles p ON p.wallet=s.wallet {pnl_join} WHERE s.asset=? ORDER BY p.smart_score DESC,s.buys+s.sells DESC LIMIT 50',(asset,))]
             if 'wallet_clusters' in tables:clusters=[dict(r) for r in db.execute('SELECT * FROM wallet_clusters WHERE asset=? ORDER BY members DESC,transactions DESC',(asset,))]
+            if 'capital_wallet_asset' in tables:capital_flows=[dict(r) for r in db.execute('SELECT * FROM capital_wallet_asset WHERE asset=? ORDER BY buy_count DESC,size_trend DESC LIMIT 100',(asset,))]
+            if 'capital_clusters' in tables:funding_clusters=[dict(r) for r in db.execute('SELECT * FROM capital_clusters WHERE asset=? ORDER BY members DESC,buys DESC LIMIT 50',(asset,))]
         alerts=[]
         if 'alerts' in tables:
             for row in db.execute('SELECT * FROM alerts ORDER BY id DESC LIMIT 100'):
@@ -202,6 +215,7 @@ def read(dbpath, asset=None, offset=0):
         health.update(wallet_profiler_heartbeat=meta.get('wallet_profiler_heartbeat'),wallet_profiler_age_seconds=age(meta.get('wallet_profiler_heartbeat')),wallet_profiles=int(meta.get('wallet_profiles','0')),wallet_clusters=int(meta.get('wallet_clusters','0')))
         health.update(wallet_pnl_heartbeat=meta.get('wallet_pnl_heartbeat'),wallet_pnl_age_seconds=age(meta.get('wallet_pnl_heartbeat')),wallet_pnl_wallets=int(meta.get('wallet_pnl_wallets','0')))
         health.update(market_heartbeat=meta.get('market_heartbeat'),market_age_seconds=age(meta.get('market_heartbeat')),market_assets=int(meta.get('market_assets','0')))
+        health.update(capital_flow_heartbeat=meta.get('capital_flow_heartbeat'),capital_flow_age_seconds=age(meta.get('capital_flow_heartbeat')),capital_flow_wallet_assets=int(meta.get('capital_flow_wallet_assets','0')),capital_flow_clusters=int(meta.get('capital_flow_clusters','0')))
         protocols=[dict(r) for r in db.execute('SELECT * FROM protocol_sources ORDER BY status,name')] if 'protocol_sources' in tables else []
         births=[]
         if 'topology_observations' in tables:
@@ -210,7 +224,7 @@ def read(dbpath, asset=None, offset=0):
         health.update(topology_heartbeat=meta.get('topology_heartbeat'),topology_age_seconds=age(meta.get('topology_heartbeat')),
                       topology_entities=int(meta.get('topology_entities','0')),topology_edges=int(meta.get('topology_edges','0')),
                       topology_births=int(meta.get('topology_births','0')))
-        return {'health':health,'candidates':ranked,'events':events,'wallets':wallets,'clusters':clusters,'alerts':alerts,'births':births,'protocols':protocols,'calibration':calibration(db,tables),'has_more':has_more,'offset':offset,'sample_limit':5000,
+        return {'health':health,'candidates':ranked,'events':events,'wallets':wallets,'clusters':clusters,'capital_flows':capital_flows,'funding_clusters':funding_clusters,'alerts':alerts,'births':births,'protocols':protocols,'calibration':calibration(db,tables),'has_more':has_more,'offset':offset,'sample_limit':5000,
                 'score_model': {'version':2,'meaning':'Screening evidence only; not a return prediction or buy recommendation.','sample':'Latest 5,000 stored events.','components':['activity score','budgeted sender attribution','contract screening'],'limitations':['Safety screening is not a source-code audit.','Unknown capabilities receive no safety points.','No USD liquidity, holder history, social, or profitable-wallet history.']}}
     finally: db.close()
 
