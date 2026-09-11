@@ -6,7 +6,7 @@ import sqlite3
 import time
 
 from dashboard import read
-from listener import database, now
+from listener import database, now, set_meta
 
 LOG = logging.getLogger('alerts')
 
@@ -72,7 +72,13 @@ def cycle(path, cooldown=1800, improvement=8):
     snapshot=read(path)
     if snapshot['health'].get('state')!='healthy': return []
     db=database(path);schema(db)
-    try:return evaluate(db,snapshot['candidates'],cooldown,improvement)
+    try:
+        emitted=evaluate(db,snapshot['candidates'],cooldown,improvement)
+        with db:
+            set_meta(db,'alert_heartbeat',now())
+            set_meta(db,'alert_active_rules',db.execute('SELECT COUNT(*) FROM alert_states WHERE active=1').fetchone()[0])
+            set_meta(db,'alert_last_emitted',len(emitted))
+        return emitted
     finally:db.close()
 
 
