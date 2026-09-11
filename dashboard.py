@@ -154,7 +154,10 @@ def read(dbpath, asset=None, offset=0):
             shared_clusters={r['asset']:r['n'] for r in db.execute("SELECT asset,COUNT(*) n FROM capital_clusters WHERE confidence='observed-shared-sender' AND members>=2 GROUP BY asset")}
         migration_signal={}
         if 'capital_migrations' in tables:
-            migration_signal={r['target_asset']:dict(r) for r in db.execute('SELECT target_asset,COUNT(DISTINCT wallet) migrating_wallets,COUNT(DISTINCT source_asset) migration_sources,MIN(latency_seconds) fastest_migration_seconds FROM capital_migrations GROUP BY target_asset')}
+            join='LEFT JOIN wallet_performance p ON p.wallet=m.wallet' if 'wallet_performance' in tables else ''
+            qualified="COUNT(DISTINCT CASE WHEN m.target_buy_time>=strftime('%s','now')-300 AND p.win_rate>=55 AND p.realized_assets>=3 THEN m.wallet END)" if join else '0'
+            sql=f"SELECT m.target_asset,COUNT(DISTINCT m.wallet) migrating_wallets,COUNT(DISTINCT m.source_asset) migration_sources,MIN(m.latency_seconds) fastest_migration_seconds,{qualified} qualified_migrating_wallets_5m FROM capital_migrations m {join} GROUP BY m.target_asset"
+            migration_signal={r['target_asset']:dict(r) for r in db.execute(sql)}
         markets={r['asset']:dict(r) for r in db.execute('SELECT * FROM market_snapshots')} if 'market_snapshots' in tables else {}
         for c in candidates.values():
             c['unique_buyers']=len(c['buyers'])
@@ -174,7 +177,7 @@ def read(dbpath, asset=None, offset=0):
                 c[key]=cap.get(key,0) or 0
             c['shared_sender_clusters']=shared_clusters.get(c['id'],0)
             mig=migration_signal.get(c['id'],{})
-            c['migrating_wallets']=mig.get('migrating_wallets',0);c['migration_sources']=mig.get('migration_sources',0);c['fastest_migration_seconds']=mig.get('fastest_migration_seconds')
+            c['migrating_wallets']=mig.get('migrating_wallets',0);c['migration_sources']=mig.get('migration_sources',0);c['fastest_migration_seconds']=mig.get('fastest_migration_seconds');c['qualified_migrating_wallets_5m']=mig.get('qualified_migrating_wallets_5m',0)
             flow=consensus.get(c['id'],{});c['profitable_wallets_5m']=len(flow.get('w5',()))
             c['profitable_wallets_15m']=len(flow.get('w15',()));c['profitable_wallets_30m']=len(flow.get('w30',()))
             c['independent_profitable_wallets_30m']=len(flow.get('direct30',()));c['unattributed_profitable_wallets_30m']=len(flow.get('unknown30',()));c['consensus_proof']=flow.get('proof',[])

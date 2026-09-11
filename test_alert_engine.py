@@ -48,7 +48,7 @@ class AlertTests(unittest.TestCase):
         self.assertIn('$JAR',message);self.assertIn('Jar Agent',message);self.assertIn('1 WETH',message);self.assertIn('repeat 3×',message);self.assertIn('https://example/tx',message)
 
     def test_capital_rotation_requires_identified_safe_asset(self):
-        good=candidate(symbol='MOVE',name='Move',market_status='quote-only',migrating_wallets=2,migration_sources=1)
+        good=candidate(symbol='MOVE',name='Move',market_status='quote-only',qualified_migrating_wallets_5m=2,migration_sources=1)
         self.assertIn('capital-rotation',[r[0] for r in matches(good)])
         good['symbol']=good['name']=None;good['market_status']='unknown'
         self.assertNotIn('capital-rotation',[r[0] for r in matches(good)])

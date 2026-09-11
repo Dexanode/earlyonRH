@@ -93,7 +93,7 @@ def telegram_text(alert):
     proof='\n'.join(f"• {w['wallet'][:8]}…{w['wallet'][-6:]} · buy {amount(w.get('quote_in_raw'))} · repeat {w.get('buy_count',1)}× · win {w.get('win_rate') if w.get('win_rate') is not None else '—'}%\n  {w.get('buy_tx_url','')}" for w in wallets[:5]) or '• Buyer detail belum cukup untuk diperingkat'
     mc=metric(e.get('market_cap_usd'),'$') if e.get('market_cap_usd') is not None else metric(e.get('market_cap_quote'))+' '+quote
     liq=metric(e.get('liquidity_usd'),'$') if e.get('liquidity_usd') is not None else metric(e.get('liquidity_quote'))+' '+quote
-    flow=f"Repeat {e.get('ordered_repeat_wallets',0)} · size-up {e.get('increasing_size_wallets',0)} · retained {e.get('retained_wallets',0)} · migrating {e.get('migrating_wallets',0)} dari {e.get('migration_sources',0)} token"
+    flow=f"Repeat {e.get('ordered_repeat_wallets',0)} · size-up {e.get('increasing_size_wallets',0)} · retained {e.get('retained_wallets',0)} · qualified migration 5m {e.get('qualified_migrating_wallets_5m',0)}"
     return (f"🔎 ${symbol} — {alert['title']}\n{name}\n\nCA\n{alert['asset']}\n\nMC {mc} · Liq {liq} · Vol 1h {metric(e.get('volume_1h_quote'))} {quote}\n5m {metric(e.get('change_5m'))}% · 1h {metric(e.get('change_1h'))}%\nBuy/sell {e.get('buys',0)}/{e.get('sells',0)} · buyers {e.get('unique_buyers',0)}\n{flow}\nSafety {e.get('safety_status','unknown')} · score {alert['score'] or '—'}\n\nBUYERS\n{proof}\n\nOnchain evidence; contract dan exit path tetap perlu diverifikasi.")[:4000]
 
 
@@ -125,8 +125,8 @@ def matches(c):
     if identified and c['safety_status']!='higher-risk' and c.get('ordered_repeat_wallets',0)>=2 and c.get('increasing_size_wallets',0)>=1 and c.get('retained_wallets',0)>=2:
         score=min(100,50+c['ordered_repeat_wallets']*6+c['increasing_size_wallets']*5+c.get('profitable_wallets_30m',0)*4)
         out.append(('repeat-qualified-flow','high','Repeat qualified flow terdeteksi',score))
-    if identified and c['safety_status']!='higher-risk' and c.get('migrating_wallets',0)>=2 and c.get('migration_sources',0)>=1:
-        score=min(100,55+c['migrating_wallets']*7+c['migration_sources']*4)
+    if identified and c['safety_status']!='higher-risk' and c.get('qualified_migrating_wallets_5m',0)>=2 and c.get('migration_sources',0)>=1:
+        score=min(100,60+c['qualified_migrating_wallets_5m']*8+c['migration_sources']*2)
         out.append(('capital-rotation','high','Rotasi modal masuk terdeteksi',score))
     if c.get('cluster_count',0)>0 and c.get('cluster_members',0)>=3 and c['buys']>=5:
         out.append(('coordinated-flow','medium','Flow terkoordinasi terdeteksi',c['activity_score']))
@@ -176,7 +176,7 @@ def source_wallets(db, asset, limit=5, preferred=None):
 
 
 def evidence(c, db=None):
-    keys=('protocol','activity_score','conviction_score','safety_score','safety_status','buys','sells','unique_buyers','repeat_buyers','unique_senders','routed_share','smart_wallets','best_wallet_score','cluster_count','cluster_members','ordered_repeat_wallets','increasing_size_wallets','retained_wallets','provisional_funding_roots','shared_sender_wallets','shared_sender_clusters','migrating_wallets','migration_sources','fastest_migration_seconds','activity_acceleration','age_blocks','buy_sell_ratio','safety_findings','symbol','name','quote_symbol','quote_decimals','price_quote','price_usd','market_cap_quote','market_cap_usd','liquidity_quote','liquidity_usd','volume_5m_quote','volume_1h_quote','volume_24h_quote','change_5m','change_1h','change_6h','change_24h','market_source','market_status','profitable_wallets_5m','profitable_wallets_15m','profitable_wallets_30m','independent_profitable_wallets_30m','unattributed_profitable_wallets_30m','consensus_proof')
+    keys=('protocol','activity_score','conviction_score','safety_score','safety_status','buys','sells','unique_buyers','repeat_buyers','unique_senders','routed_share','smart_wallets','best_wallet_score','cluster_count','cluster_members','ordered_repeat_wallets','increasing_size_wallets','retained_wallets','provisional_funding_roots','shared_sender_wallets','shared_sender_clusters','migrating_wallets','migration_sources','fastest_migration_seconds','qualified_migrating_wallets_5m','activity_acceleration','age_blocks','buy_sell_ratio','safety_findings','symbol','name','quote_symbol','quote_decimals','price_quote','price_usd','market_cap_quote','market_cap_usd','liquidity_quote','liquidity_usd','volume_5m_quote','volume_1h_quote','volume_24h_quote','change_5m','change_1h','change_6h','change_24h','market_source','market_status','profitable_wallets_5m','profitable_wallets_15m','profitable_wallets_30m','independent_profitable_wallets_30m','unattributed_profitable_wallets_30m','consensus_proof')
     out={k:c.get(k) for k in keys}
     preferred=[p['wallet'] for p in c.get('consensus_proof',[])]
     wallets=source_wallets(db,c['id'],preferred=preferred) if db else []
