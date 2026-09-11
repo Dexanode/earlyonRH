@@ -28,6 +28,10 @@ def matches(c):
     out=[]
     if c['safety_status']=='higher-risk':
         out.append(('contract-risk','critical','Contract risk terdeteksi',c.get('safety_score') or 0))
+    if c.get('smart_wallets',0)>=2 and (c.get('conviction_score') or 0)>=55 and c['safety_status']=='screened' and c['buys']>=5:
+        out.append(('smart-wallet-entry','high','Beberapa early wallet masuk',c['conviction_score']))
+    if c.get('cluster_count',0)>0 and c.get('cluster_members',0)>=3 and c['buys']>=5:
+        out.append(('coordinated-flow','medium','Flow terkoordinasi terdeteksi',c['activity_score']))
     if (c.get('conviction_score') or 0)>=70 and c['safety_status']=='screened' and c['unique_senders']>=3 and c['buys']>=5 and c['buy_sell_ratio']>=1.5 and c['activity_acceleration']>=1.2 and c['routed_share']<=.75:
         out.append(('trench-candidate','high','Kandidat trench terkonfirmasi',c['conviction_score']))
     elif (c.get('conviction_score') or 0)>=58 and c['safety_status']=='screened' and c['unique_senders']>=2 and c['buys']>=5 and c['activity_acceleration']>=1.5:
@@ -38,7 +42,7 @@ def matches(c):
 
 
 def evidence(c):
-    keys=('protocol','activity_score','conviction_score','safety_score','safety_status','buys','sells','unique_buyers','repeat_buyers','unique_senders','routed_share','activity_acceleration','age_blocks','buy_sell_ratio','safety_findings')
+    keys=('protocol','activity_score','conviction_score','safety_score','safety_status','buys','sells','unique_buyers','repeat_buyers','unique_senders','routed_share','smart_wallets','best_wallet_score','cluster_count','cluster_members','activity_acceleration','age_blocks','buy_sell_ratio','safety_findings')
     return {k:c.get(k) for k in keys}
 
 
