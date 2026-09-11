@@ -13,6 +13,10 @@ LOG=logging.getLogger('wallet-profiler')
 
 def schema(db):
     db.executescript('''
+      CREATE TABLE IF NOT EXISTS tx_attributions(
+        tx_hash TEXT PRIMARY KEY, asset TEXT NOT NULL, sender TEXT,
+        event_actor TEXT, relation TEXT, checked_at TEXT NOT NULL, error TEXT);
+      CREATE INDEX IF NOT EXISTS tx_attributions_asset ON tx_attributions(asset);
       CREATE TABLE IF NOT EXISTS wallet_profiles(
         wallet TEXT PRIMARY KEY, updated_at TEXT NOT NULL, buys INTEGER NOT NULL,
         sells INTEGER NOT NULL, assets INTEGER NOT NULL, early_assets INTEGER NOT NULL,
