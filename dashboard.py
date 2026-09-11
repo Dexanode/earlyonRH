@@ -112,10 +112,7 @@ def read(dbpath, asset=None, offset=0):
                 elif relation not in ('direct','routed'):item['unknown30'].add(wallet)
                 if len(item['proof'])<10:item['proof'].append({'wallet':wallet,'tx_hash':row['tx_hash'],'block':row['block_number'],'timestamp':row['event_timestamp'],'relation':tx_rel.get(row['tx_hash']) or 'unknown','win_rate':profitable[wallet]['win_rate'],'realized_assets':profitable[wallet]['realized_assets']})
         launches = {r['asset']: r['created_block'] for r in db.execute('SELECT asset,MIN(created_block) created_block FROM watches WHERE asset IS NOT NULL GROUP BY asset')}
-        launch_deployers={}
-        for row in db.execute("SELECT asset,decoded FROM events WHERE name='TokenLaunched' AND asset IS NOT NULL"):
-            deployer=json.loads(row['decoded']).get('deployer')
-            if deployer:launch_deployers[row['asset']]=deployer.lower()
+        launch_deployers={r['target']:r['source'].lower() for r in db.execute("SELECT source,target FROM topology_edges WHERE relation='deployed'")} if 'topology_edges' in tables else {}
         candidates = {}
         for row in recent:
             key = row['asset']
