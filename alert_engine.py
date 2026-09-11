@@ -3,8 +3,10 @@ import argparse
 import datetime as dt
 import json
 import logging
+import os
 import sqlite3
 import time
+from urllib import parse, request
 
 from dashboard import read
 from listener import database, now, set_meta
@@ -30,6 +32,10 @@ def schema(db):
         source_wallets INTEGER NOT NULL DEFAULT 0, wallets_sold INTEGER NOT NULL DEFAULT 0,
         post_alert_buys INTEGER NOT NULL DEFAULT 0, post_alert_sells INTEGER NOT NULL DEFAULT 0,
         FOREIGN KEY(alert_id) REFERENCES alerts(id));
+      CREATE TABLE IF NOT EXISTS alert_deliveries(
+        alert_id INTEGER PRIMARY KEY, channel TEXT NOT NULL, status TEXT NOT NULL,
+        attempts INTEGER NOT NULL DEFAULT 0, last_attempt_at TEXT, delivered_at TEXT,
+        error TEXT, FOREIGN KEY(alert_id) REFERENCES alerts(id));
     ''')
     columns={r[1] for r in db.execute('PRAGMA table_info(alert_lifecycle)')}
     if 'tracking_started_at' not in columns:
@@ -71,6 +77,30 @@ def track_lifecycle(db):
         with db:db.execute(f'INSERT OR REPLACE INTO alert_lifecycle({columns}) VALUES('+','.join('?'*17)+')',values)
         updated+=1
     return updated
+
+
+def telegram_text(alert):
+    e=json.loads(alert['evidence']);symbol=e.get('symbol') or alert['asset'][:10]
+    wallets=e.get('source_wallets') or []
+    proof='\n'.join(f"• {w['wallet'][:8]}…{w['wallet'][-6:]} · score {w.get('smart_score','—')} · {w.get('buy_tx_url','')}" for w in wallets[:5])
+    return (f"⚡ {alert['severity'].upper()} · {alert['title']}\n${symbol} · score {alert['score'] or '—'}\n"
+            f"Buy/sell {e.get('buys',0)}/{e.get('sells',0)} · profitable 5/15/30m {e.get('profitable_wallets_5m',0)}/{e.get('profitable_wallets_15m',0)}/{e.get('profitable_wallets_30m',0)}\n"
+            f"Asset: {alert['asset']}\n{proof}\nEvidence only; verify contract, liquidity, and exit path.")[:4000]
+
+
+def deliver(db, token=None, chat_id=None, limit=10):
+    if not token or not chat_id:return 0
+    rows=db.execute("SELECT a.* FROM alert_deliveries d JOIN alerts a ON a.id=d.alert_id WHERE d.status!='sent' AND d.attempts<5 ORDER BY a.id LIMIT ?",(limit,)).fetchall();sent=0
+    for alert in rows:
+        try:
+            body=parse.urlencode({'chat_id':chat_id,'text':telegram_text(alert),'disable_web_page_preview':'true'}).encode()
+            with request.urlopen(request.Request(f'https://api.telegram.org/bot{token}/sendMessage',data=body),timeout=12) as response:
+                if response.status!=200:raise OSError(f'Telegram HTTP {response.status}')
+            with db:db.execute("UPDATE alert_deliveries SET status='sent',attempts=attempts+1,last_attempt_at=?,delivered_at=?,error=NULL WHERE alert_id=?",(now(),now(),alert['id']))
+            sent+=1
+        except Exception as exc:
+            with db:db.execute("UPDATE alert_deliveries SET status='retry',attempts=attempts+1,last_attempt_at=?,error=? WHERE alert_id=?",(now(),str(exc)[:300],alert['id']))
+    return sent
 
 
 def matches(c):
@@ -171,12 +201,17 @@ def cycle(path, cooldown=1800, improvement=8):
         tracked=track_lifecycle(db)
         if snapshot['health'].get('state')!='healthy': return []
         emitted=evaluate(db,snapshot['candidates'],cooldown,improvement)
+        with db:
+            for alert_id in emitted:db.execute("INSERT OR IGNORE INTO alert_deliveries(alert_id,channel,status) VALUES(?,'telegram','pending')",(alert_id,))
+        delivered=deliver(db,os.environ.get('TELEGRAM_BOT_TOKEN'),os.environ.get('TELEGRAM_CHAT_ID'))
         if emitted:tracked=track_lifecycle(db)
         with db:
             set_meta(db,'alert_heartbeat',now())
             set_meta(db,'alert_active_rules',db.execute('SELECT COUNT(*) FROM alert_states WHERE active=1').fetchone()[0])
             set_meta(db,'alert_last_emitted',len(emitted))
             set_meta(db,'alert_lifecycles',tracked)
+            set_meta(db,'telegram_configured','1' if os.environ.get('TELEGRAM_BOT_TOKEN') and os.environ.get('TELEGRAM_CHAT_ID') else '0')
+            set_meta(db,'telegram_last_delivered',delivered)
         return emitted
     finally:db.close()
 

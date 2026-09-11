@@ -3,7 +3,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from alert_engine import evaluate, matches, schema, source_wallets, track_lifecycle
+from alert_engine import evaluate, matches, schema, source_wallets, track_lifecycle, telegram_text
 from listener import database
 from wallet_profiler import schema as wallet_schema
 
@@ -42,6 +42,11 @@ class AlertTests(unittest.TestCase):
     def test_smart_wallet_watch_allows_explicitly_unknown_audit(self):
         rules=[r[0] for r in matches(candidate(conviction_score=None,safety_score=None,safety_status='unknown',smart_wallets=5,activity_score=65,buys=25,sells=8))]
         self.assertIn('smart-wallet-watch',rules)
+    def test_telegram_message_contains_traceable_evidence(self):
+        row={'asset':candidate()['id'],'severity':'high','title':'Consensus','score':80,'evidence':json.dumps({'symbol':'JAR','buys':9,'sells':2,'source_wallets':[{'wallet':'0x'+'2'*40,'smart_score':70,'buy_tx_url':'https://example/tx'}]})}
+        message=telegram_text(row)
+        self.assertIn('$JAR',message);self.assertIn('https://example/tx',message)
+
     def test_lifecycle_tracks_returns_and_wallet_exits(self):
         with self.db:
             self.db.execute('CREATE TABLE market_snapshots(asset TEXT PRIMARY KEY,price_quote REAL)')

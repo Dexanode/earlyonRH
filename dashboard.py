@@ -57,6 +57,7 @@ def read(dbpath, asset=None, offset=0):
                       reason='Menunggu checkpoint pertama.' if freshness is None else '', chain_id=4663)
         health.update(alert_heartbeat=meta.get('alert_heartbeat'),alert_age_seconds=age(meta.get('alert_heartbeat')),
                       alert_active_rules=int(meta.get('alert_active_rules','0')),alert_last_emitted=int(meta.get('alert_last_emitted','0')),alert_lifecycles=int(meta.get('alert_lifecycles','0')))
+        health.update(telegram_configured=meta.get('telegram_configured')=='1',telegram_last_delivered=int(meta.get('telegram_last_delivered','0')))
         if meta.get('transport') == 'websocket-logs':
             gap = max(0, int(meta.get('recovery_target', '0')) - int(meta.get('recovery_next', '1')) + 1)
             health.update(transport='websocket-logs', recovery_blocks=gap, validation=meta.get('validation'))
