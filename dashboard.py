@@ -128,7 +128,11 @@ def read(dbpath, asset=None, offset=0):
                 e=dict(row);e['decoded']=json.loads(e['decoded']);e.pop('raw')
                 e['explorer_url']='https://robinhoodchain.blockscout.com/tx/'+e['tx_hash']
                 events.append(e)
-        return {'health':health,'candidates':ranked,'events':events,'has_more':has_more,'offset':offset,'sample_limit':5000,
+        alerts=[]
+        if 'alerts' in tables:
+            for row in db.execute('SELECT * FROM alerts ORDER BY id DESC LIMIT 100'):
+                item=dict(row);item['evidence']=json.loads(item['evidence']);alerts.append(item)
+        return {'health':health,'candidates':ranked,'events':events,'alerts':alerts,'has_more':has_more,'offset':offset,'sample_limit':5000,
                 'score_model': {'version':2,'meaning':'Screening evidence only; not a return prediction or buy recommendation.','sample':'Latest 5,000 stored events.','components':['activity score','budgeted sender attribution','contract screening'],'limitations':['Safety screening is not a source-code audit.','Unknown capabilities receive no safety points.','No USD liquidity, holder history, social, or profitable-wallet history.']}}
     finally: db.close()
 

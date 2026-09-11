@@ -49,5 +49,16 @@ services:
       options:
         max-size: "10m"
         max-file: "3"
+  alerts:
+    build: .
+    command: ["python", "alert_engine.py", "--db", "data/live.sqlite"]
+    restart: unless-stopped
+    volumes:
+      - listener_data:/app/data
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
 volumes:
   listener_data:
