@@ -6,7 +6,7 @@ from http.server import ThreadingHTTPServer
 import unittest
 import urllib.request
 import urllib.error
-from dashboard import read, handler, score_candidate
+from dashboard import read, handler, score_candidate, calibration
 from listener import database, Collector, set_meta, now
 from test_listener import FakeRPC, make_log, LAUNCH, BUY, V2, addr
 
@@ -23,6 +23,16 @@ class DashboardTests(unittest.TestCase):
         db=database(self.path)
         launch=make_log('pons_v2',0,LAUNCH,V2);buy=make_log('curve',0,BUY,addr(2));buy['logIndex']='0x1'
         c=Collector(db,FakeRPC([launch,buy]),start=2,chunk=1);c.setup();c.tick();db.close()
+    def test_calibration_groups_mature_results_by_rule(self):
+        db=database(self.path)
+        db.executescript('CREATE TABLE alerts(id INTEGER PRIMARY KEY,rule TEXT,severity TEXT); CREATE TABLE alert_lifecycle(alert_id INTEGER,return_5m REAL,return_15m REAL,return_1h REAL,return_6h REAL,max_return REAL,drawdown_from_ath REAL);')
+        with db:
+            db.execute("INSERT INTO alerts VALUES(1,'consensus','high')")
+            db.execute('INSERT INTO alert_lifecycle VALUES(1,5,10,20,30,55,-8)')
+        result=calibration(db,{'alerts','alert_lifecycle'});db.close();rule=result['rules'][0]
+        self.assertEqual((rule['tracked'],rule['mature_1h'],rule['win_rate_1h'],rule['hit_50']),(1,1,100.0,100.0))
+        self.assertEqual(rule['recommendation'],'collecting-data')
+
     def test_missing_database_does_not_create_file(self):
         self.assertEqual(read(self.path)['health']['state'],'waiting');self.assertFalse(self.path.exists())
     def test_live_aggregation_and_detail(self):

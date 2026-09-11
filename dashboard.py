@@ -6,6 +6,7 @@ import json
 from pathlib import Path
 import re
 import sqlite3
+import statistics
 from urllib.parse import urlparse, parse_qs
 
 STATIC = Path(__file__).parent / 'web'
@@ -34,6 +35,26 @@ def age(value):
     if not value: return None
     try: return max(0, (dt.datetime.now(dt.timezone.utc)-dt.datetime.fromisoformat(value)).total_seconds())
     except (ValueError, TypeError): return None
+
+
+def calibration(db, tables):
+    if not {'alerts','alert_lifecycle'}.issubset(tables):return {'rules':[],'totals':{'tracked':0,'mature_1h':0,'rules':0}}
+    rows=db.execute('SELECT a.rule,a.severity,l.* FROM alerts a JOIN alert_lifecycle l ON l.alert_id=a.id').fetchall();groups={}
+    for row in rows:groups.setdefault(row['rule'],[]).append(row)
+    result=[]
+    for rule,items in groups.items():
+        metric=lambda key:[float(r[key]) for r in items if r[key] is not None]
+        one=metric('return_1h');maxes=metric('max_return');drawdowns=metric('drawdown_from_ath')
+        hit=lambda target:round(100*sum(v>=target for v in maxes)/len(maxes),1) if maxes else None
+        win=round(100*sum(v>0 for v in one)/len(one),1) if one else None
+        recommendation='collecting-data' if len(one)<20 else 'consider-tightening' if hit(25)>=35 and win>=55 else 'raise-threshold' if hit(25)<15 or win<40 else 'keep-threshold'
+        result.append({'rule':rule,'severity':items[0]['severity'],'tracked':len(items),'mature_1h':len(one),'win_rate_1h':win,
+          'median_5m':round(statistics.median(metric('return_5m')),2) if metric('return_5m') else None,'median_15m':round(statistics.median(metric('return_15m')),2) if metric('return_15m') else None,
+          'median_1h':round(statistics.median(one),2) if one else None,'median_6h':round(statistics.median(metric('return_6h')),2) if metric('return_6h') else None,
+          'hit_25':hit(25),'hit_50':hit(50),'hit_100':hit(100),'median_drawdown':round(statistics.median(drawdowns),2) if drawdowns else None,'recommendation':recommendation})
+    result.sort(key=lambda x:(x['mature_1h'],x['tracked']),reverse=True)
+    return {'rules':result,'totals':{'tracked':len(rows),'mature_1h':sum(x['mature_1h'] for x in result),'rules':len(result)},
+            'method':{'win':'1h return > 0%','hits':'Maximum observed return since tracking began','minimum_sample':20,'price_unit':'Quote-token price; never mixed across assets'}}
 
 
 def read(dbpath, asset=None, offset=0):
@@ -180,7 +201,7 @@ def read(dbpath, asset=None, offset=0):
         health.update(wallet_profiler_heartbeat=meta.get('wallet_profiler_heartbeat'),wallet_profiler_age_seconds=age(meta.get('wallet_profiler_heartbeat')),wallet_profiles=int(meta.get('wallet_profiles','0')),wallet_clusters=int(meta.get('wallet_clusters','0')))
         health.update(wallet_pnl_heartbeat=meta.get('wallet_pnl_heartbeat'),wallet_pnl_age_seconds=age(meta.get('wallet_pnl_heartbeat')),wallet_pnl_wallets=int(meta.get('wallet_pnl_wallets','0')))
         health.update(market_heartbeat=meta.get('market_heartbeat'),market_age_seconds=age(meta.get('market_heartbeat')),market_assets=int(meta.get('market_assets','0')))
-        return {'health':health,'candidates':ranked,'events':events,'wallets':wallets,'clusters':clusters,'alerts':alerts,'has_more':has_more,'offset':offset,'sample_limit':5000,
+        return {'health':health,'candidates':ranked,'events':events,'wallets':wallets,'clusters':clusters,'alerts':alerts,'calibration':calibration(db,tables),'has_more':has_more,'offset':offset,'sample_limit':5000,
                 'score_model': {'version':2,'meaning':'Screening evidence only; not a return prediction or buy recommendation.','sample':'Latest 5,000 stored events.','components':['activity score','budgeted sender attribution','contract screening'],'limitations':['Safety screening is not a source-code audit.','Unknown capabilities receive no safety points.','No USD liquidity, holder history, social, or profitable-wallet history.']}}
     finally: db.close()
 
