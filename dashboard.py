@@ -56,7 +56,7 @@ def read(dbpath, asset=None, offset=0):
         health = dict(safe, state=state, age_seconds=freshness, lag_blocks=max(0,head-cursor) if head is not None and cursor is not None else None,
                       reason='Menunggu checkpoint pertama.' if freshness is None else '', chain_id=4663)
         health.update(alert_heartbeat=meta.get('alert_heartbeat'),alert_age_seconds=age(meta.get('alert_heartbeat')),
-                      alert_active_rules=int(meta.get('alert_active_rules','0')),alert_last_emitted=int(meta.get('alert_last_emitted','0')))
+                      alert_active_rules=int(meta.get('alert_active_rules','0')),alert_last_emitted=int(meta.get('alert_last_emitted','0')),alert_lifecycles=int(meta.get('alert_lifecycles','0')))
         if meta.get('transport') == 'websocket-logs':
             gap = max(0, int(meta.get('recovery_target', '0')) - int(meta.get('recovery_next', '1')) + 1)
             health.update(transport='websocket-logs', recovery_blocks=gap, validation=meta.get('validation'))
@@ -173,7 +173,9 @@ def read(dbpath, asset=None, offset=0):
         alerts=[]
         if 'alerts' in tables:
             for row in db.execute('SELECT * FROM alerts ORDER BY id DESC LIMIT 100'):
-                item=dict(row);item['evidence']=json.loads(item['evidence']);alerts.append(item)
+                item=dict(row);item['evidence']=json.loads(item['evidence'])
+                life=db.execute('SELECT * FROM alert_lifecycle WHERE alert_id=?',(item['id'],)).fetchone() if 'alert_lifecycle' in tables else None
+                item['lifecycle']=dict(life) if life else None;alerts.append(item)
         health.update(wallet_profiler_heartbeat=meta.get('wallet_profiler_heartbeat'),wallet_profiler_age_seconds=age(meta.get('wallet_profiler_heartbeat')),wallet_profiles=int(meta.get('wallet_profiles','0')),wallet_clusters=int(meta.get('wallet_clusters','0')))
         health.update(wallet_pnl_heartbeat=meta.get('wallet_pnl_heartbeat'),wallet_pnl_age_seconds=age(meta.get('wallet_pnl_heartbeat')),wallet_pnl_wallets=int(meta.get('wallet_pnl_wallets','0')))
         health.update(market_heartbeat=meta.get('market_heartbeat'),market_age_seconds=age(meta.get('market_heartbeat')),market_assets=int(meta.get('market_assets','0')))

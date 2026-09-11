@@ -3,7 +3,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from alert_engine import evaluate, matches, schema, source_wallets
+from alert_engine import evaluate, matches, schema, source_wallets, track_lifecycle
 from listener import database
 from wallet_profiler import schema as wallet_schema
 
@@ -42,6 +42,18 @@ class AlertTests(unittest.TestCase):
     def test_smart_wallet_watch_allows_explicitly_unknown_audit(self):
         rules=[r[0] for r in matches(candidate(conviction_score=None,safety_score=None,safety_status='unknown',smart_wallets=5,activity_score=65,buys=25,sells=8))]
         self.assertIn('smart-wallet-watch',rules)
+    def test_lifecycle_tracks_returns_and_wallet_exits(self):
+        with self.db:
+            self.db.execute('CREATE TABLE market_snapshots(asset TEXT PRIMARY KEY,price_quote REAL)')
+            self.db.execute('INSERT INTO market_snapshots VALUES(?,?)',(candidate()['id'],2.0))
+            self.db.execute('INSERT INTO alerts(created_at,asset,rule,severity,title,score,evidence) VALUES(?,?,?,?,?,?,?)',('2026-09-10T00:00:00+00:00',candidate()['id'],'x','high','x',80,json.dumps({'source_wallets':[]})))
+        self.assertEqual(track_lifecycle(self.db),1)
+        row=self.db.execute('SELECT * FROM alert_lifecycle').fetchone()
+        self.assertEqual((row['entry_price_quote'],row['current_return'],row['max_return']),(2.0,0.0,0.0))
+        with self.db:self.db.execute('UPDATE market_snapshots SET price_quote=3')
+        track_lifecycle(self.db);row=self.db.execute('SELECT * FROM alert_lifecycle').fetchone()
+        self.assertEqual((row['current_return'],row['max_return'],row['drawdown_from_ath']),(50.0,50.0,0.0))
+
     def test_consensus_requires_profitable_and_independent_wallets(self):
         good=candidate(profitable_wallets_5m=1,profitable_wallets_15m=2,profitable_wallets_30m=3,independent_profitable_wallets_30m=2)
         self.assertIn('smart-money-consensus',[r[0] for r in matches(good)])
