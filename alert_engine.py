@@ -23,7 +23,7 @@ def schema(db):
         asset TEXT NOT NULL, rule TEXT NOT NULL, active INTEGER NOT NULL,
         last_score REAL, last_alert_at TEXT, PRIMARY KEY(asset,rule));
       CREATE TABLE IF NOT EXISTS alert_lifecycle(
-        alert_id INTEGER PRIMARY KEY, updated_at TEXT NOT NULL,
+        alert_id INTEGER PRIMARY KEY, updated_at TEXT NOT NULL, tracking_started_at TEXT NOT NULL,
         entry_price_quote REAL, latest_price_quote REAL, ath_price_quote REAL,
         return_5m REAL, return_15m REAL, return_1h REAL, return_6h REAL,
         current_return REAL, max_return REAL, drawdown_from_ath REAL,
@@ -31,6 +31,11 @@ def schema(db):
         post_alert_buys INTEGER NOT NULL DEFAULT 0, post_alert_sells INTEGER NOT NULL DEFAULT 0,
         FOREIGN KEY(alert_id) REFERENCES alerts(id));
     ''')
+    columns={r[1] for r in db.execute('PRAGMA table_info(alert_lifecycle)')}
+    if 'tracking_started_at' not in columns:
+        with db:
+            db.execute('ALTER TABLE alert_lifecycle ADD COLUMN tracking_started_at TEXT')
+            db.execute('UPDATE alert_lifecycle SET tracking_started_at=updated_at WHERE tracking_started_at IS NULL')
 
 
 def _pct(price, entry):
@@ -47,7 +52,7 @@ def track_lifecycle(db):
         if not market or not market['price_quote']:continue
         price=float(market['price_quote']);old=db.execute('SELECT * FROM alert_lifecycle WHERE alert_id=?',(alert['id'],)).fetchone()
         evidence=json.loads(alert['evidence']);wallets={w['wallet'].lower() for w in evidence.get('source_wallets',[]) if w.get('wallet')}
-        created=dt.datetime.fromisoformat(alert['created_at']);elapsed=max(0,(dt.datetime.now(dt.timezone.utc)-created).total_seconds())
+        created=dt.datetime.fromisoformat(alert['created_at']);started=(old['tracking_started_at'] if old else now());elapsed=max(0,(dt.datetime.now(dt.timezone.utc)-dt.datetime.fromisoformat(started)).total_seconds())
         entry=float(old['entry_price_quote']) if old and old['entry_price_quote'] else price
         ath=max(price,float(old['ath_price_quote'] or price)) if old else price
         checkpoints={k:(old[k] if old else None) for k in ('return_5m','return_15m','return_1h','return_6h')}
@@ -61,8 +66,8 @@ def track_lifecycle(db):
                 wallet=(json.loads(row['decoded']).get('seller') or '').lower()
                 if wallet in wallets:sold.add(wallet)
         current=_pct(price,entry);maximum=_pct(ath,entry);drawdown=round((price/ath-1)*100,2) if ath else None
-        values=(alert['id'],now(),entry,price,ath,checkpoints['return_5m'],checkpoints['return_15m'],checkpoints['return_1h'],checkpoints['return_6h'],current,maximum,drawdown,len(wallets),len(sold),buys,sells)
-        with db:db.execute('INSERT OR REPLACE INTO alert_lifecycle VALUES('+','.join('?'*16)+')',values)
+        values=(alert['id'],now(),started,entry,price,ath,checkpoints['return_5m'],checkpoints['return_15m'],checkpoints['return_1h'],checkpoints['return_6h'],current,maximum,drawdown,len(wallets),len(sold),buys,sells)
+        with db:db.execute('INSERT OR REPLACE INTO alert_lifecycle VALUES('+','.join('?'*17)+')',values)
         updated+=1
     return updated
 
