@@ -13,7 +13,7 @@ class WalletProfilerTests(unittest.TestCase):
             db=database(Path(d)/'x.sqlite');schema(db)
             asset='0x'+'a'*40;sender='0x'+'f'*40
             with db:
-                db.execute('INSERT INTO watches(address,kind,asset,created_block,created_tx,active) VALUES(?,?,?,?,?,1)',(asset,'curve',asset,100,'0x1'))
+                db.execute('INSERT INTO watches(address,kind,asset,created_block) VALUES(?,?,?,?)',(asset,'curve',asset,100))
                 for i,w in enumerate(('0x'+'1'*40,'0x'+'2'*40)):
                     tx='0x'+str(i+1).zfill(64);decoded=json.dumps({'buyer':w})
                     db.execute('INSERT INTO events(chain_id,block_number,block_hash,tx_hash,tx_index,log_index,address,kind,asset,topic0,name,decoded,raw,observed_at,event_timestamp,decode_error) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',(4663,110+i,'0x'+'0'*64,tx,0,i,asset,'curve',asset,'0x0','CurveBuy',decoded,'{}',now(),now(),None))
