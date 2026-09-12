@@ -110,7 +110,7 @@ def attribute_transactions(db, rpc, assets, limit):
     if not marks: return 0
     rows = db.execute(f'''SELECT e.tx_hash,e.asset,e.decoded FROM events e
       LEFT JOIN tx_attributions t ON t.tx_hash=e.tx_hash
-      WHERE e.asset IN ({marks}) AND e.name IN ('CurveBuy','CurveSell')
+      WHERE e.asset IN ({marks}) AND e.name IN ('CurveBuy','CurveSell','DexBuy','DexSell')
         AND (t.tx_hash IS NULL OR t.error IS NOT NULL)
       ORDER BY e.block_number DESC LIMIT ?''', (*assets, limit)).fetchall()
     for row in rows:
@@ -120,7 +120,7 @@ def attribute_transactions(db, rpc, assets, limit):
         try:
             tx = rpc.call('eth_getTransactionByHash', [row['tx_hash']])
             sender = tx.get('from', '').lower() if tx else None
-            relation = 'direct' if sender and sender == actor else 'routed' if sender else 'unknown'
+            relation = 'direct' if sender and sender == actor else 'v4-tx-sender' if sender and actor_values.get('_pool_id') else 'routed' if sender else 'unknown'
         except RateLimited:
             break
         except RpcError as exc: error = str(exc)
@@ -134,7 +134,7 @@ def top_assets(db, limit=10):
     head = int(dict(db.execute('SELECT key,value FROM meta')).get('head', 0))
     return [r[0] for r in db.execute('''SELECT asset FROM events
       WHERE asset IS NOT NULL AND block_number>? GROUP BY asset
-      HAVING SUM(name='CurveBuy')>=3 ORDER BY COUNT(*) DESC LIMIT ?''', (head-3000, limit))]
+      HAVING SUM(name IN ('CurveBuy','DexBuy'))>=3 ORDER BY COUNT(*) DESC LIMIT ?''', (head-3000, limit))]
 
 
 def cycle(db, rpc, tx_limit=5):

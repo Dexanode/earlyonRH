@@ -15,7 +15,7 @@ from listener import CHAIN, REGISTRY, RPC, RpcError, database, get_meta, set_met
 
 LOG = logging.getLogger('stream')
 FACTORIES = {a: k for a, k in REGISTRY.items() if k.startswith('pons_') or k=='long'}
-TOPICS = list(dict.fromkeys(s['topic'] for k in ('pons_v1', 'pons_v2', 'long', 'curve', 'v3_pool', 'v2_factory', 'v3_factory', 'erc6551_registry') for s in SPECS[k]))
+TOPICS = list(dict.fromkeys(s['topic'] for k in ('pons_v1', 'pons_v2', 'long', 'curve', 'v3_pool', 'v4', 'v2_factory', 'v3_factory', 'erc6551_registry') for s in SPECS[k]))
 GENERIC_BIRTH_TOPICS = {s['topic']: kind for kind in ('pons_v1','pons_v2','v2_factory','v3_factory','erc6551_registry') for s in SPECS[kind] if s['name'] in ('TokenLaunched','PairCreated','PoolCreated','ERC6551AccountCreated')}
 MAX_AUTO_RECOVERY = 100
 
@@ -28,6 +28,7 @@ class StreamStore:
         self.connected = False
         self.last_message = 0
         db.execute('CREATE TABLE IF NOT EXISTS stream_pending(tx TEXT,idx INTEGER,block INTEGER,body TEXT,PRIMARY KEY(tx,idx))')
+        db.execute('CREATE TABLE IF NOT EXISTS v4_asset_pools(pool_id TEXT PRIMARY KEY,asset TEXT NOT NULL,quote TEXT,currency0 TEXT,currency1 TEXT,created_block INTEGER NOT NULL)')
         with db:
             set_meta(db, 'transport', 'websocket-logs')
             set_meta(db, 'validation', 'provider stream log held for three heads; no separate header/receipt verification')
@@ -97,6 +98,14 @@ class StreamStore:
         rows = [json.loads(r[0]) for r in self.db.execute('SELECT body FROM stream_pending WHERE block<=? ORDER BY block,idx LIMIT 5000', (target,))]
         # Launches precede child events even if subscription messages were reordered.
         rows.sort(key=lambda r: (int(r['blockNumber'], 16), r['address'].lower() not in FACTORIES, int(r['logIndex'], 16)))
+        launched={r['asset'].lower() for r in self.db.execute("SELECT DISTINCT asset FROM events WHERE name IN ('TokenLaunched','Create') AND asset IS NOT NULL")}
+        for raw in rows:
+            if raw['address'].lower() in FACTORIES:
+                try:
+                    n,v=decode(FACTORIES[raw['address'].lower()],raw)
+                    if n in ('TokenLaunched','Create'):launched.add((v.get('token') or v.get('asset')).lower())
+                except (ValueError,AttributeError):pass
+        pool_assets={r['pool_id']:dict(r) for r in self.db.execute('SELECT * FROM v4_asset_pools')}
         count = 0
         with self.db:
             for row in rows:
@@ -107,11 +116,29 @@ class StreamStore:
                     self.gap(n, n)
                     continue
                 address = row['address'].lower()
-                kind = FACTORIES.get(address) or watches.get(address, {}).get('kind')
+                kind = REGISTRY.get(address) or watches.get(address, {}).get('kind')
                 if not kind and row.get('topics'):
                     kind = GENERIC_BIRTH_TOPICS.get(row['topics'][0].lower())
                 if kind:
                     name, values = decode(kind, row)
+                    if kind=='v4' and name=='Initialize':
+                        currencies=[values.get('currency0','').lower(),values.get('currency1','').lower()]
+                        matched=next((c for c in currencies if c in launched),None)
+                        if matched:
+                            quote=currencies[1] if matched==currencies[0] else currencies[0]
+                            mapping={'pool_id':values['id'],'asset':matched,'quote':quote,'currency0':currencies[0],'currency1':currencies[1],'created_block':n}
+                            self.db.execute('INSERT OR REPLACE INTO v4_asset_pools VALUES(?,?,?,?,?,?)',tuple(mapping.values()));pool_assets[values['id']]=mapping
+                    if kind=='v4' and name=='Swap':
+                        mapping=pool_assets.get(values.get('id'))
+                        if not mapping:
+                            self.db.execute('DELETE FROM stream_pending WHERE tx=? AND idx=?',(row['transactionHash'],idx));continue
+                        field='amount0' if mapping['asset']==mapping['currency0'] else 'amount1'
+                        quote_field='amount1' if field=='amount0' else 'amount0'
+                        side='DexSell' if int(values[field])>0 else 'DexBuy'
+                        values[('seller' if side=='DexSell' else 'buyer')]=values.get('sender')
+                        if side=='DexBuy': values['tokensOut']=abs(int(values[field]));values['quoteIn']=abs(int(values[quote_field]))
+                        else: values['tokensIn']=abs(int(values[field]));values['quoteOut']=abs(int(values[quote_field]))
+                        values['_pool_id']=values['id'];values['_quote']=mapping['quote'];name=side
                     if name == 'TokenLaunched':
                         child = values['pool'] if kind == 'pons_v1' else values['curve']
                         w = dict(address=child, kind='v3_pool' if kind == 'pons_v1' else 'curve', asset=values['token'], created_block=n)
@@ -126,7 +153,7 @@ class StreamStore:
                         w=dict(address=child,kind='v3_pool',asset=child,created_block=n)
                         watches[child]=w
                         self.db.execute('INSERT OR IGNORE INTO watches VALUES (?,?,?,?)',tuple(w.values()))
-                    asset = values.get('token') or values.get('asset') or values.get('pair') or values.get('pool') or values.get('account') or watches.get(address, {}).get('asset')
+                    asset = (pool_assets.get(values.get('id')) or {}).get('asset') or values.get('token') or values.get('asset') or values.get('pair') or values.get('pool') or values.get('account') or watches.get(address, {}).get('asset')
                     values['_validation'] = 'provider-stream-confirmed-3-heads'
                     self.db.execute('INSERT OR IGNORE INTO events VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)',
                         (row['transactionHash'], idx, n, row['blockHash'], address, kind, name, asset,

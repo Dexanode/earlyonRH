@@ -66,10 +66,10 @@ def track_lifecycle(db):
         checkpoints={k:(old[k] if old else None) for k in ('return_5m','return_15m','return_1h','return_6h')}
         for key,seconds in (('return_5m',300),('return_15m',900),('return_1h',3600),('return_6h',21600)):
             if checkpoints[key] is None and elapsed>=seconds:checkpoints[key]=_pct(price,entry)
-        post=db.execute("SELECT name,decoded FROM events WHERE asset=? AND COALESCE(event_timestamp,0)>=? AND name IN ('CurveBuy','CurveSell')",(alert['asset'],int(created.timestamp()))).fetchall() if 'events' in tables else []
+        post=db.execute("SELECT name,decoded FROM events WHERE asset=? AND COALESCE(event_timestamp,0)>=? AND name IN ('CurveBuy','CurveSell','DexBuy','DexSell')",(alert['asset'],int(created.timestamp()))).fetchall() if 'events' in tables else []
         sold=set();buys=sells=0
         for row in post:
-            buys+=row['name']=='CurveBuy';sells+=row['name']=='CurveSell'
+            buys+=row['name'] in ('CurveBuy','DexBuy');sells+=row['name']=='CurveSell'
             if row['name']=='CurveSell':
                 wallet=(json.loads(row['decoded']).get('seller') or '').lower()
                 if wallet in wallets:sold.add(wallet)
@@ -126,11 +126,13 @@ def matches(c):
                and c.get('buy_sell_ratio',0)>=1.25)
     fresh_alpha=(identified and bool(c.get('deployer')) and c.get('age_blocks') is not None and c['age_blocks']<=15000
                  and market_survived and live_flow and (c.get('last_trade_age_seconds') is None or c['last_trade_age_seconds']<=180)
-                 and not c.get('dev_exit_detected') and c.get('deployer_launch_count',0)<3 and c['safety_status']!='higher-risk')
+                 and not c.get('dev_exit_detected') and not c.get('insider_exit_detected') and c.get('deployer_launch_count',0)<3 and c['safety_status']!='higher-risk')
     if c['safety_status']=='higher-risk':
         out.append(('contract-risk','critical','Contract risk terdeteksi',c.get('safety_score') or 0))
     if c.get('dev_exit_detected'):
         out.append(('dev-exit','critical','Deployer sell terdeteksi',0))
+    if c.get('insider_exit_detected'):
+        out.append(('insider-exit','critical','Creator-linked wallet sell terdeteksi',0))
     if identified and c.get('deployer_launch_count',0)>=3:
         score=min(100,40+c['deployer_launch_count']*5)
         out.append(('serial-deployer','medium','Serial deployer terdeteksi',score))
@@ -164,20 +166,22 @@ def source_wallets(db, asset, limit=5, preferred=None):
     capital={r['wallet']:dict(r) for r in db.execute('SELECT * FROM capital_wallet_asset WHERE asset=?',(asset,))} if 'capital_wallet_asset' in tables else {}
     performance={r['wallet']:dict(r) for r in db.execute('SELECT * FROM wallet_performance')} if 'wallet_performance' in tables else {}
     asset_pnl={r['wallet']:dict(r) for r in db.execute('SELECT * FROM wallet_asset_pnl WHERE asset=?',(asset,))} if 'wallet_asset_pnl' in tables else {}
-    rows=db.execute("SELECT tx_hash,block_number,observed_at,event_timestamp,name,decoded FROM events WHERE asset=? AND name IN ('CurveBuy','CurveSell') ORDER BY block_number,log_index",(asset,)).fetchall()
+    attrs={r['tx_hash']:dict(r) for r in db.execute('SELECT tx_hash,sender FROM tx_attributions WHERE error IS NULL')} if 'tx_attributions' in tables else {}
+    rows=db.execute("SELECT tx_hash,block_number,observed_at,event_timestamp,name,decoded FROM events WHERE asset=? AND name IN ('CurveBuy','CurveSell','DexBuy','DexSell') ORDER BY block_number,log_index",(asset,)).fetchall()
     activity=[]
     for row in rows:
-        values=json.loads(row['decoded']);wallet=(values.get('buyer') if row['name']=='CurveBuy' else values.get('seller'))
+        values=json.loads(row['decoded']);a=attrs.get(row['tx_hash'])
+        wallet=(a.get('sender') if row['name'].startswith('Dex') and a else None) or (values.get('buyer') if row['name'].endswith('Buy') else values.get('seller'))
         if wallet:activity.append((row,wallet.lower(),values))
     latest={}
     for row,wallet,values in activity:
-        if row['name']=='CurveBuy':latest[wallet]=(row,values)
+        if row['name'] in ('CurveBuy','DexBuy'):latest[wallet]=(row,values)
     preferred=set(preferred or ())
     eligible=[item for item in latest.items() if profiles.get(item[0],{}).get('smart_score',0)>=55 or capital.get(item[0],{}).get('buy_count',0)>=2]
     ranked=sorted(eligible,key=lambda item:(item[0] in preferred,capital.get(item[0],{}).get('buy_count',0),profiles.get(item[0],{}).get('smart_score',0),item[1][0]['block_number']),reverse=True)[:limit]
     result=[]
     for wallet,(buy,values) in ranked:
-        sells=[(r,v) for r,w,v in activity if w==wallet and r['name']=='CurveSell' and r['block_number']>=buy['block_number']]
+        sells=[(r,v) for r,w,v in activity if w==wallet and r['name'] in ('CurveSell','DexSell') and r['block_number']>=buy['block_number']]
         p=profiles.get(wallet,{});cap=capital.get(wallet,{})
         perf=performance.get(wallet,{});ap=asset_pnl.get(wallet,{})
         result.append({'wallet':wallet,'buy_tx':buy['tx_hash'],'buy_block':buy['block_number'],'buy_time':buy['event_timestamp'] or buy['observed_at'],
@@ -193,7 +197,7 @@ def source_wallets(db, asset, limit=5, preferred=None):
 
 
 def evidence(c, db=None):
-    keys=('protocol','activity_score','conviction_score','safety_score','safety_status','buys','sells','buys_5m','sells_5m','last_trade_age_seconds','dev_buy_count','dev_sell_count','dev_exit_detected','deployer','deployer_launch_count','deployer_other_assets','unique_buyers','repeat_buyers','unique_senders','routed_share','smart_wallets','best_wallet_score','cluster_count','cluster_members','ordered_repeat_wallets','increasing_size_wallets','retained_wallets','provisional_funding_roots','shared_sender_wallets','shared_sender_clusters','migrating_wallets','migration_sources','fastest_migration_seconds','qualified_migrating_wallets_5m','activity_acceleration','age_blocks','buy_sell_ratio','market_observations','observation_span_seconds','drawdown_from_observed_high','safety_findings','symbol','name','quote_symbol','quote_decimals','price_quote','price_usd','market_cap_quote','market_cap_usd','liquidity_quote','liquidity_usd','volume_5m_quote','volume_1h_quote','volume_24h_quote','change_5m','change_1h','change_6h','change_24h','market_source','market_status','profitable_wallets_5m','profitable_wallets_15m','profitable_wallets_30m','independent_profitable_wallets_30m','unattributed_profitable_wallets_30m','consensus_proof')
+    keys=('protocol','activity_score','conviction_score','safety_score','safety_status','buys','sells','buys_5m','sells_5m','last_trade_age_seconds','dev_buy_count','dev_sell_count','dev_exit_detected','deployer','creator_attribution','creator_confidence','insider_wallets','insider_sell_count','insider_exit_detected','deployer_launch_count','deployer_other_assets','unique_buyers','repeat_buyers','unique_senders','routed_share','smart_wallets','best_wallet_score','cluster_count','cluster_members','ordered_repeat_wallets','increasing_size_wallets','retained_wallets','provisional_funding_roots','shared_sender_wallets','shared_sender_clusters','migrating_wallets','migration_sources','fastest_migration_seconds','qualified_migrating_wallets_5m','activity_acceleration','age_blocks','buy_sell_ratio','market_observations','observation_span_seconds','drawdown_from_observed_high','safety_findings','symbol','name','quote_symbol','quote_decimals','price_quote','price_usd','market_cap_quote','market_cap_usd','liquidity_quote','liquidity_usd','volume_5m_quote','volume_1h_quote','volume_24h_quote','change_5m','change_1h','change_6h','change_24h','market_source','market_status','profitable_wallets_5m','profitable_wallets_15m','profitable_wallets_30m','independent_profitable_wallets_30m','unattributed_profitable_wallets_30m','consensus_proof')
     out={k:c.get(k) for k in keys}
     preferred=[p['wallet'] for p in c.get('consensus_proof',[])]
     wallets=source_wallets(db,c['id'],preferred=preferred) if db else []

@@ -95,12 +95,13 @@ def read(dbpath, asset=None, offset=0):
                 health['reason'] += ' Recovery: ' + meta['recovery_error']
         recent = db.execute('SELECT tx_hash,asset,kind,name,decoded,block_number,observed_at,event_timestamp FROM events ORDER BY block_number DESC,log_index DESC LIMIT 5000').fetchall()
         profitable={r['wallet']:dict(r) for r in db.execute('SELECT wallet,win_rate,realized_assets,realized_by_quote FROM wallet_performance WHERE win_rate>=55 AND realized_assets>=3')} if 'wallet_performance' in tables else {}
-        tx_rel={r['tx_hash']:r['relation'] for r in db.execute('SELECT tx_hash,relation FROM tx_attributions WHERE error IS NULL')} if 'tx_attributions' in tables else {}
+        tx_attrs={r['tx_hash']:dict(r) for r in db.execute('SELECT tx_hash,sender,relation FROM tx_attributions WHERE error IS NULL')} if 'tx_attributions' in tables else {}
         reference_ts=max((r['event_timestamp'] or 0 for r in recent),default=0)
         consensus={}
         for row in recent:
-            if row['name']!='CurveBuy' or not row['asset']:continue
-            wallet=(json.loads(row['decoded']).get('buyer') or '').lower()
+            if row['name'] not in ('CurveBuy','DexBuy') or not row['asset']:continue
+            decoded=json.loads(row['decoded']);attr=tx_attrs.get(row['tx_hash'],{})
+            wallet=((attr.get('sender') if row['name']=='DexBuy' else None) or decoded.get('buyer') or '').lower()
             if wallet not in profitable:continue
             item=consensus.setdefault(row['asset'],{'w5':set(),'w15':set(),'w30':set(),'direct30':set(),'unknown30':set(),'proof':[]})
             seconds=max(0,reference_ts-(row['event_timestamp'] or 0))
@@ -108,12 +109,14 @@ def read(dbpath, asset=None, offset=0):
             if seconds<=900:item['w15'].add(wallet)
             if seconds<=1800:
                 item['w30'].add(wallet)
-                relation=tx_rel.get(row['tx_hash'])
+                relation=attr.get('relation')
                 if relation=='direct':item['direct30'].add(wallet)
                 elif relation not in ('direct','routed'):item['unknown30'].add(wallet)
-                if len(item['proof'])<10:item['proof'].append({'wallet':wallet,'tx_hash':row['tx_hash'],'block':row['block_number'],'timestamp':row['event_timestamp'],'relation':tx_rel.get(row['tx_hash']) or 'unknown','win_rate':profitable[wallet]['win_rate'],'realized_assets':profitable[wallet]['realized_assets']})
+                if len(item['proof'])<10:item['proof'].append({'wallet':wallet,'tx_hash':row['tx_hash'],'block':row['block_number'],'timestamp':row['event_timestamp'],'relation':attr.get('relation') or 'unknown','win_rate':profitable[wallet]['win_rate'],'realized_assets':profitable[wallet]['realized_assets']})
         launches = {r['asset']: r['created_block'] for r in db.execute('SELECT asset,MIN(created_block) created_block FROM watches WHERE asset IS NOT NULL GROUP BY asset')}
         launch_deployers={r['target']:r['source'].lower() for r in db.execute("SELECT source,target FROM topology_edges WHERE relation='deployed'")} if 'topology_edges' in tables else {}
+        creators={r['asset']:dict(r) for r in db.execute('SELECT * FROM asset_creators')} if 'asset_creators' in tables else {}
+        insider_signal={r['asset']:dict(r) for r in db.execute('SELECT asset,COUNT(*) insider_wallets,SUM(sell_count) insider_sells,SUM(CASE WHEN depth<=1 AND sell_count>0 THEN 1 ELSE 0 END) insider_sellers FROM insider_wallets GROUP BY asset')} if 'insider_wallets' in tables else {}
         deployer_launch_counts=Counter(launch_deployers.values())
         deployer_assets=defaultdict(list)
         for token,deployer in launch_deployers.items():deployer_assets[deployer].append(token)
@@ -124,20 +127,20 @@ def read(dbpath, asset=None, offset=0):
             c = candidates.setdefault(key, {'id':key,'kind':'pool' if row['kind']=='v4' else 'token','protocol':row['kind'],'events':0,'buys':0,'sells':0,'buys_5m':0,'sells_5m':0,'liquidity_changes':0,'last_block':row['block_number'],'last_trade_timestamp':None,'last_seen':row['observed_at'],'first_seen_in_sample':row['observed_at'],'latest_event':row['name'],'currencies':[],'buyers':{},'trade_wallets':[],'events_last_100':0,'events_previous_400':0,'launch_block':launches.get(key)})
             c['events'] += 1
             c['first_seen_in_sample'] = min(c['first_seen_in_sample'],row['observed_at'])
-            c['buys'] += row['name']=='CurveBuy'
-            c['sells'] += row['name']=='CurveSell'
+            c['buys'] += row['name'] in ('CurveBuy','DexBuy')
+            c['sells'] += row['name'] in ('CurveSell','DexSell')
             event_age=max(0,reference_ts-(row['event_timestamp'] or 0)) if reference_ts else None
             if event_age is not None and event_age<=300:
-                c['buys_5m'] += row['name']=='CurveBuy';c['sells_5m'] += row['name']=='CurveSell'
+                c['buys_5m'] += row['name'] in ('CurveBuy','DexBuy');c['sells_5m'] += row['name'] in ('CurveSell','DexSell')
             c['liquidity_changes'] += row['name']=='ModifyLiquidity'
             if head is not None:
                 c['events_last_100'] += row['block_number'] > head-100
                 c['events_previous_400'] += head-500 < row['block_number'] <= head-100
             values=json.loads(row['decoded'])
-            buyer=values.get('buyer') if row['name']=='CurveBuy' else None
+            attr=tx_attrs.get(row['tx_hash'],{});buyer=((attr.get('sender') if row['name']=='DexBuy' else None) or values.get('buyer')) if row['name'] in ('CurveBuy','DexBuy') else None
             if buyer: c['buyers'][buyer]=c['buyers'].get(buyer,0)+1
-            if row['name'] in ('CurveBuy','CurveSell'):
-                wallet=values.get('buyer') if row['name']=='CurveBuy' else values.get('seller')
+            if row['name'] in ('CurveBuy','CurveSell','DexBuy','DexSell'):
+                wallet=(attr.get('sender') if row['name'].startswith('Dex') else None) or (values.get('buyer') if row['name'].endswith('Buy') else values.get('seller'))
                 c['last_trade_timestamp']=max(c['last_trade_timestamp'] or 0,row['event_timestamp'] or 0)
                 if wallet:c['trade_wallets'].append((row['name'],wallet.lower()))
             if row['name']=='Initialize':
@@ -211,12 +214,14 @@ def read(dbpath, asset=None, offset=0):
             c['safety_score']=analysis['safety_score'] if analysis else None
             c['safety_status']=analysis['safety_status'] if analysis else 'unknown'
             c['safety_findings']=json.loads(analysis['findings']) if analysis else []
-            c['deployer']=(analysis['deployer'] if analysis and analysis['deployer'] else launch_deployers.get(c['id']))
+            creator=creators.get(c['id'],{});c['deployer']=(creator.get('creator') or (analysis['deployer'] if analysis and analysis['deployer'] else launch_deployers.get(c['id'])))
+            c['creator_attribution']=creator.get('attribution');c['creator_confidence']=creator.get('confidence')
+            ins=insider_signal.get(c['id'],{});c['insider_wallets']=ins.get('insider_wallets',0) or 0;c['insider_sell_count']=ins.get('insider_sells',0) or 0;c['insider_exit_detected']=(ins.get('insider_sellers',0) or 0)>0
             deployer=(c['deployer'] or '').lower()
             c['deployer_launch_count']=deployer_launch_counts.get(deployer,0)
             c['deployer_other_assets']=[a for a in deployer_assets.get(deployer,()) if a!=c['id']][:10]
-            c['dev_buy_count']=sum(name=='CurveBuy' and wallet==deployer for name,wallet in c['trade_wallets']) if deployer else 0
-            c['dev_sell_count']=sum(name=='CurveSell' and wallet==deployer for name,wallet in c['trade_wallets']) if deployer else 0
+            c['dev_buy_count']=sum(name in ('CurveBuy','DexBuy') and wallet==deployer for name,wallet in c['trade_wallets']) if deployer else 0
+            c['dev_sell_count']=sum(name in ('CurveSell','DexSell') and wallet==deployer for name,wallet in c['trade_wallets']) if deployer else 0
             c['dev_exit_detected']=c['dev_sell_count']>0
             c['last_trade_age_seconds']=max(0,reference_ts-c['last_trade_timestamp']) if reference_ts and c['last_trade_timestamp'] else None
             del c['trade_wallets']
@@ -231,7 +236,7 @@ def read(dbpath, asset=None, offset=0):
         health['events_in_sample']=len(recent)
         health['candidates_in_sample']=len(candidates)
         health['decode_errors_in_sample']=sum(r['name']=='DecodeError' for r in recent)
-        events=[]; wallets=[]; clusters=[]; capital_flows=[]; funding_clusters=[]; migrations=[]; has_more=False
+        events=[]; wallets=[]; clusters=[]; capital_flows=[]; funding_clusters=[]; migrations=[];insiders=[];insider_edges=[];has_more=False
         if asset:
             rows=db.execute('SELECT * FROM events WHERE asset=? ORDER BY block_number DESC,log_index DESC LIMIT 101 OFFSET ?', (asset,offset)).fetchall()
             has_more=len(rows)>100
@@ -247,6 +252,8 @@ def read(dbpath, asset=None, offset=0):
             if 'capital_wallet_asset' in tables:capital_flows=[dict(r) for r in db.execute('SELECT * FROM capital_wallet_asset WHERE asset=? ORDER BY buy_count DESC,size_trend DESC LIMIT 100',(asset,))]
             if 'capital_clusters' in tables:funding_clusters=[dict(r) for r in db.execute('SELECT * FROM capital_clusters WHERE asset=? ORDER BY members DESC,buys DESC LIMIT 50',(asset,))]
             if 'capital_migrations' in tables:migrations=[dict(r) for r in db.execute('SELECT * FROM capital_migrations WHERE target_asset=? ORDER BY target_buy_time DESC LIMIT 100',(asset,))]
+            if 'insider_wallets' in tables:insiders=[dict(r) for r in db.execute('SELECT * FROM insider_wallets WHERE asset=? ORDER BY depth,balance_raw DESC',(asset,))]
+            if 'insider_edges' in tables:insider_edges=[dict(r) for r in db.execute('SELECT * FROM insider_edges WHERE asset=? ORDER BY depth,first_block',(asset,))]
         alerts=[]
         if 'alerts' in tables:
             for row in db.execute('SELECT * FROM alerts ORDER BY id DESC LIMIT 100'):
@@ -257,6 +264,7 @@ def read(dbpath, asset=None, offset=0):
         health.update(wallet_pnl_heartbeat=meta.get('wallet_pnl_heartbeat'),wallet_pnl_age_seconds=age(meta.get('wallet_pnl_heartbeat')),wallet_pnl_wallets=int(meta.get('wallet_pnl_wallets','0')))
         health.update(market_heartbeat=meta.get('market_heartbeat'),market_age_seconds=age(meta.get('market_heartbeat')),market_assets=int(meta.get('market_assets','0')))
         health.update(capital_flow_heartbeat=meta.get('capital_flow_heartbeat'),capital_flow_age_seconds=age(meta.get('capital_flow_heartbeat')),capital_flow_wallet_assets=int(meta.get('capital_flow_wallet_assets','0')),capital_flow_clusters=int(meta.get('capital_flow_clusters','0')),capital_migrations=int(meta.get('capital_migrations','0')))
+        health.update(creator_graph_heartbeat=meta.get('creator_graph_heartbeat'),creator_graph_age_seconds=age(meta.get('creator_graph_heartbeat')),creator_assets=int(meta.get('creator_assets','0')),insider_wallets=int(meta.get('insider_wallets','0')))
         protocols=[dict(r) for r in db.execute('SELECT * FROM protocol_sources ORDER BY status,name')] if 'protocol_sources' in tables else []
         births=[]
         if 'topology_observations' in tables:
@@ -265,7 +273,7 @@ def read(dbpath, asset=None, offset=0):
         health.update(topology_heartbeat=meta.get('topology_heartbeat'),topology_age_seconds=age(meta.get('topology_heartbeat')),
                       topology_entities=int(meta.get('topology_entities','0')),topology_edges=int(meta.get('topology_edges','0')),
                       topology_births=int(meta.get('topology_births','0')))
-        return {'health':health,'candidates':ranked,'events':events,'wallets':wallets,'clusters':clusters,'capital_flows':capital_flows,'funding_clusters':funding_clusters,'migrations':migrations,'alerts':alerts,'births':births,'protocols':protocols,'calibration':calibration(db,tables),'has_more':has_more,'offset':offset,'sample_limit':5000,
+        return {'health':health,'candidates':ranked,'events':events,'wallets':wallets,'clusters':clusters,'capital_flows':capital_flows,'funding_clusters':funding_clusters,'migrations':migrations,'insiders':insiders,'insider_edges':insider_edges,'alerts':alerts,'births':births,'protocols':protocols,'calibration':calibration(db,tables),'has_more':has_more,'offset':offset,'sample_limit':5000,
                 'score_model': {'version':2,'meaning':'Screening evidence only; not a return prediction or buy recommendation.','sample':'Latest 5,000 stored events.','components':['activity score','budgeted sender attribution','contract screening'],'limitations':['Safety screening is not a source-code audit.','Unknown capabilities receive no safety points.','No USD liquidity, holder history, social, or profitable-wallet history.']}}
     finally: db.close()
 

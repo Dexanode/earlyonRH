@@ -5,7 +5,7 @@ import unittest
 from pathlib import Path
 from websockets.asyncio.server import serve
 from stream import StreamStore, consume
-from listener import database, get_meta, set_meta
+from listener import REGISTRY, database, get_meta, set_meta
 from test_listener import FakeRPC, make_log, LAUNCH, BUY, V2, addr, h
 from dashboard import read
 
@@ -31,6 +31,18 @@ class StoreTests(unittest.TestCase):
         self.assertEqual(self.db.execute('select count(*) from receipts').fetchone()[0], 0)
         self.assertEqual(read(self.path)['health']['transport'], 'websocket-logs')
         self.assertEqual(read(self.path)['health']['recovery_blocks'], 0)
+
+    def test_long_v4_pool_maps_swap_to_asset_side(self):
+        airlock=next(a for a,k in REGISTRY.items() if k=='long');manager=next(a for a,k in REGISTRY.items() if k=='v4')
+        asset,quote,pool=addr(20),addr(21),h(22)
+        create=make_log('long',0,{'asset':asset,'numeraire':quote,'initializer':addr(23),'poolOrHook':addr(24)},airlock);create['logIndex']='0x2'
+        init=make_log('v4',0,{'id':pool,'currency0':asset,'currency1':quote,'fee':3000,'tickSpacing':60,'hooks':addr(24),'sqrtPriceX96':2**96,'tick':0},manager);init['logIndex']='0x0'
+        swap=make_log('v4',2,{'id':pool,'sender':addr(25),'amount0':-100,'amount1':10,'sqrtPriceX96':2**96,'liquidity':1000,'tick':0,'fee':3000},manager);swap['logIndex']='0x1'
+        for row in (swap,create,init):self.s.log(row)
+        self.s.flush()
+        event=self.db.execute("SELECT asset,name,decoded FROM events WHERE name='DexBuy'").fetchone()
+        self.assertEqual((event['asset'],event['name']),(asset,'DexBuy'))
+        self.assertEqual(json.loads(event['decoded'])['buyer'],addr(25))
 
     def test_pending_survives_restart_and_commits_after_three_heads(self):
         row = make_log('pons_v2', 0, LAUNCH, V2)

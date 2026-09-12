@@ -48,12 +48,12 @@ def rebuild_pnl(db, limit=20000):
     tables={r[0] for r in db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
     if 'market_snapshots' not in tables:return 0
     markets={r['asset']:dict(r) for r in db.execute('SELECT asset,decimals,quote_decimals,quote_symbol FROM market_snapshots WHERE decimals IS NOT NULL AND quote_decimals IS NOT NULL')}
-    rows=db.execute("SELECT asset,name,decoded FROM events WHERE asset IS NOT NULL AND name IN ('CurveBuy','CurveSell') ORDER BY block_number DESC,log_index DESC LIMIT ?",(limit,)).fetchall()[::-1]
+    rows=db.execute("SELECT asset,name,decoded FROM events WHERE asset IS NOT NULL AND name IN ('CurveBuy','CurveSell','DexBuy','DexSell') ORDER BY block_number DESC,log_index DESC LIMIT ?",(limit,)).fetchall()[::-1]
     states=defaultdict(lambda:{'qty':0.0,'cost':0.0,'realized':0.0,'buy_quote':0.0,'sell_quote':0.0,'matched_sells':0})
     for row in rows:
         market=markets.get(row['asset'])
         if not market:continue
-        values=json.loads(row['decoded']);buy=row['name']=='CurveBuy';wallet=values.get('buyer') if buy else values.get('seller')
+        values=json.loads(row['decoded']);buy=row['name'] in ('CurveBuy','DexBuy');wallet=values.get('buyer') if buy else values.get('seller')
         if not wallet:continue
         s=states[(row['asset'],wallet.lower())];td=10**market['decimals'];qd=10**market['quote_decimals']
         if buy:
@@ -84,16 +84,17 @@ def rebuild_pnl(db, limit=20000):
 def rebuild(db, limit=20000, early_window=500):
     launches={r['asset']:r['created_block'] for r in db.execute('SELECT asset,MIN(created_block) created_block FROM watches WHERE asset IS NOT NULL GROUP BY asset')}
     attrs={r['tx_hash']:r for r in db.execute('SELECT tx_hash,sender,event_actor,relation FROM tx_attributions WHERE error IS NULL')}
-    rows=db.execute("SELECT tx_hash,asset,name,decoded,block_number FROM events WHERE asset IS NOT NULL AND name IN ('CurveBuy','CurveSell') ORDER BY block_number DESC,log_index DESC LIMIT ?",(limit,)).fetchall()
+    rows=db.execute("SELECT tx_hash,asset,name,decoded,block_number FROM events WHERE asset IS NOT NULL AND name IN ('CurveBuy','CurveSell','DexBuy','DexSell') ORDER BY block_number DESC,log_index DESC LIMIT ?",(limit,)).fetchall()
     per=defaultdict(lambda:{'buys':0,'sells':0,'first':None,'last':None,'early':0})
     profiles=defaultdict(lambda:{'buys':0,'sells':0,'assets':set(),'early':set(),'first':None,'last':None})
     routed=defaultdict(lambda:{'members':set(),'tx':0})
     for row in rows:
-        values=json.loads(row['decoded']);wallet=(values.get('buyer') if row['name']=='CurveBuy' else values.get('seller'))
+        values=json.loads(row['decoded']);a=attrs.get(row['tx_hash'])
+        wallet=(a['sender'] if row['name'].startswith('Dex') and a and a['sender'] else (values.get('buyer') if row['name'].endswith('Buy') else values.get('seller')))
         if not wallet:continue
-        wallet=wallet.lower();key=(row['asset'],wallet);item=per[key];side='buys' if row['name']=='CurveBuy' else 'sells';item[side]+=1
+        wallet=wallet.lower();key=(row['asset'],wallet);item=per[key];side='buys' if row['name'] in ('CurveBuy','DexBuy') else 'sells';item[side]+=1
         item['first']=row['block_number'] if item['first'] is None else min(item['first'],row['block_number']);item['last']=max(item['last'] or 0,row['block_number'])
-        is_early=row['name']=='CurveBuy' and launches.get(row['asset']) is not None and row['block_number']-launches[row['asset']]<=early_window
+        is_early=row['name'] in ('CurveBuy','DexBuy') and launches.get(row['asset']) is not None and row['block_number']-launches[row['asset']]<=early_window
         item['early']|=is_early;p=profiles[wallet];p[side]+=1;p['assets'].add(row['asset']);p['first']=row['block_number'] if p['first'] is None else min(p['first'],row['block_number']);p['last']=max(p['last'] or 0,row['block_number'])
         if is_early:p['early'].add(row['asset'])
         a=attrs.get(row['tx_hash'])

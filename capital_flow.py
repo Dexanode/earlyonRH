@@ -37,10 +37,11 @@ def schema(db):
 def rebuild(db,limit=50000):
     schema(db)
     attrs={r['tx_hash']:dict(r) for r in db.execute("SELECT * FROM tx_attributions WHERE error IS NULL")} if db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='tx_attributions'").fetchone() else {}
-    rows=db.execute("SELECT tx_hash,asset,name,decoded,block_number,event_timestamp FROM events WHERE asset IS NOT NULL AND name IN ('CurveBuy','CurveSell') ORDER BY block_number DESC,log_index DESC LIMIT ?",(limit,)).fetchall()[::-1]
+    rows=db.execute("SELECT tx_hash,asset,name,decoded,block_number,event_timestamp FROM events WHERE asset IS NOT NULL AND name IN ('CurveBuy','CurveSell','DexBuy','DexSell') ORDER BY block_number DESC,log_index DESC LIMIT ?",(limit,)).fetchall()[::-1]
     flows=defaultdict(lambda:{'buys':[],'sells':[]})
     for row in rows:
-        v=json.loads(row['decoded']);buy=row['name']=='CurveBuy';wallet=v.get('buyer') if buy else v.get('seller')
+        v=json.loads(row['decoded']);buy=row['name'] in ('CurveBuy','DexBuy');a=attrs.get(row['tx_hash'])
+        wallet=(a.get('sender') if row['name'].startswith('Dex') and a else None) or (v.get('buyer') if buy else v.get('seller'))
         if not wallet:continue
         raw=int(v.get('quoteIn') or 0) if buy else int(v.get('quoteOut') or 0)
         tokens=int(v.get('tokensOut') or 0) if buy else int(v.get('tokensIn') or 0)
