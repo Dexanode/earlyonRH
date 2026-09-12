@@ -86,7 +86,7 @@ services:
         max-file: "3"
   reconciler:
     build: .
-    command: ["python", "reconciler.py", "--db", "data/live.sqlite", "--interval", "30", "--limit", "10"]
+    command: ["python", "reconciler.py", "--db", "data/live.sqlite", "--interval", "30", "--limit", "3"]
     env_file: .env
     restart: unless-stopped
     volumes:

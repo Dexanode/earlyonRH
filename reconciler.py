@@ -42,7 +42,7 @@ def schema(db):
     ''')
 
 
-def gmgn(path,address,extra=None,timeout=8):
+def gmgn(path,address,extra=None,timeout=5):
     key=os.environ.get('GMGN_API_KEY')
     if not key:raise ValueError('GMGN_API_KEY missing')
     params={'chain':'robinhood','address':address,'timestamp':int(time.time()),'client_id':str(uuid.uuid4())}

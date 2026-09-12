@@ -411,9 +411,9 @@ def suppress_untracked_risk_deliveries(db):
 
 
 def cycle(path, cooldown=1800, improvement=8):
-    snapshot=read(path)
     db=database(path);schema(db)
     try:
+        snapshot=read(path)
         # Record liveness before optional enrichment/evaluation work so an
         # expensive candidate cannot make the worker appear dead.
         with db:set_meta(db,'alert_heartbeat',now())
