@@ -77,6 +77,11 @@ def schema(db):
         with db:
             db.execute("UPDATE alert_milestones SET status='legacy-unverified',error='created before three-observation confirmation' WHERE status IN ('pending','retry','sent')")
             set_meta(db,'milestone_confirmation_v2','1')
+    cleaned=db.execute("SELECT value FROM meta WHERE key='milestone_confirmation_v3'").fetchone()
+    if not cleaned:
+        with db:
+            db.execute("UPDATE alert_milestones SET status='legacy-unverified',error='insufficient confirmation samples' WHERE confirmed_samples<3 OR confirmation_span_seconds<30")
+            set_meta(db,'milestone_confirmation_v3','1')
 
 
 def _pct(price, entry):

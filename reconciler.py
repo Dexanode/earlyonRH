@@ -149,6 +149,7 @@ def launch_lifecycle(db,limit=500):
 
 
 def cycle(db,limit=10):
+    with db:set_meta(db,'reconciler_heartbeat',now());set_meta(db,'reconciler_status','running')
     lifecycle=launch_lifecycle(db)
     assets=[row[0] for row in db.execute("""SELECT asset FROM launchpad_lifecycle
       ORDER BY CASE stage WHEN 'trading' THEN 0 WHEN 'created' THEN 1 ELSE 2 END,created_block DESC LIMIT ?""",(limit,))]
@@ -158,7 +159,7 @@ def cycle(db,limit=10):
         except sqlite3.Error as exc:LOG.warning('reconcile %s delayed: %s',asset,exc)
         time.sleep(.08)
     with db:
-        set_meta(db,'reconciler_heartbeat',now());set_meta(db,'reconciled_assets',ok);set_meta(db,'launchpad_lifecycles',lifecycle)
+        set_meta(db,'reconciler_heartbeat',now());set_meta(db,'reconciler_status','healthy');set_meta(db,'reconciled_assets',ok);set_meta(db,'launchpad_lifecycles',lifecycle)
     return ok,lifecycle
 
 
