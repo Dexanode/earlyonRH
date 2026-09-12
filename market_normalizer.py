@@ -6,7 +6,8 @@ import logging
 import os
 import sqlite3
 import time
-from urllib import request
+import uuid
+from urllib import parse, request
 
 from listener import RPC, RpcError, database, now, set_meta
 
@@ -14,6 +15,7 @@ LOG=logging.getLogger('market-normalizer')
 DECIMALS='0x313ce567';SYMBOL='0x95d89b41';NAME='0x06fdde03';SUPPLY='0x18160ddd';BALANCE='0x70a08231'
 ZERO='0x'+'0'*40
 DEXSCREENER='https://api.dexscreener.com/latest/dex/tokens/'
+GMGN_OPENAPI='https://openapi.gmgn.ai/v1/token/info'
 
 
 def schema(db):
@@ -57,15 +59,58 @@ def abi_text(value):
 def call(rpc,address,data):return rpc.call('eth_call',[{'to':address,'data':data},'latest'])
 
 
+def gmgn_metadata(address,timeout=8):
+    """Fetch GMGN's normalized token identity when an API key is configured."""
+    key=os.environ.get('GMGN_API_KEY')
+    if not key:return {}
+    query=parse.urlencode({'chain':'robinhood','address':address,'timestamp':int(time.time()),'client_id':str(uuid.uuid4())})
+    req=request.Request(GMGN_OPENAPI+'?'+query,headers={'Accept':'application/json','X-APIKEY':key,'User-Agent':'earlyonRH/1'})
+    with request.urlopen(req,timeout=timeout) as response:payload=json.load(response)
+    if str(payload.get('code')) not in ('0','0.0'):return {}
+    data=payload.get('data') or {}
+    candidates=[]
+    def walk(value):
+        if isinstance(value,dict):
+            if value.get('symbol') or value.get('name'):candidates.append(value)
+            for child in value.values():walk(child)
+        elif isinstance(value,list):
+            for child in value:walk(child)
+    walk(data)
+    exact=next((item for item in candidates if str(item.get('address') or item.get('token_address') or '').lower()==address.lower()),None)
+    chosen=exact or (candidates[0] if candidates else {})
+    return {'symbol':chosen.get('symbol'),'name':chosen.get('name')}
+
+
+def indexed_metadata(address,timeout=8):
+    pool=indexed_pool(address,timeout)
+    if not pool:return {}
+    for token in (pool.get('baseToken') or {},pool.get('quoteToken') or {}):
+        if str(token.get('address') or '').lower()==address.lower():
+            return {'symbol':token.get('symbol'),'name':token.get('name')}
+    return {}
+
+
 def metadata(db,rpc,address):
     cached=db.execute('SELECT * FROM token_metadata WHERE address=?',(address,)).fetchone()
-    if cached and not cached['error']:return dict(cached)
-    try:
-        decimals=uint(call(rpc,address,DECIMALS));supply=uint(call(rpc,address,SUPPLY))
-        symbol=abi_text(call(rpc,address,SYMBOL));name=abi_text(call(rpc,address,NAME))
-        if decimals is None or not 0<=decimals<=36:raise RpcError('invalid decimals')
-        row=(address,now(),symbol,name,decimals,str(supply) if supply is not None else None,None)
-    except RpcError as exc:row=(address,now(),None,None,None,None,str(exc))
+    if cached and not cached['error'] and cached['symbol'] and cached['name']:return dict(cached)
+    if cached and not cached['error']:
+        decimals=cached['decimals'];supply=uint(cached['total_supply']);symbol=cached['symbol'];name=cached['name']
+    else:
+        try:
+            decimals=uint(call(rpc,address,DECIMALS));supply=uint(call(rpc,address,SUPPLY))
+            symbol=abi_text(call(rpc,address,SYMBOL));name=abi_text(call(rpc,address,NAME))
+            if decimals is None or not 0<=decimals<=36:raise RpcError('invalid decimals')
+        except RpcError as exc:
+            row=(address,now(),None,None,None,None,str(exc))
+            with db:db.execute('INSERT OR REPLACE INTO token_metadata VALUES(?,?,?,?,?,?,?)',row)
+            return dict(db.execute('SELECT * FROM token_metadata WHERE address=?',(address,)).fetchone())
+    if not symbol or not name:
+        for source in (gmgn_metadata,indexed_metadata):
+            try:external=source(address)
+            except (OSError,ValueError,json.JSONDecodeError):continue
+            symbol=symbol or external.get('symbol');name=name or external.get('name')
+            if symbol and name:break
+    row=(address,now(),symbol,name,decimals,str(supply) if supply is not None else None,None)
     with db:db.execute('INSERT OR REPLACE INTO token_metadata VALUES(?,?,?,?,?,?,?)',row)
     return dict(db.execute('SELECT * FROM token_metadata WHERE address=?',(address,)).fetchone())
 
