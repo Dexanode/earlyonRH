@@ -119,6 +119,7 @@ def read(dbpath, asset=None, offset=0):
         insider_signal={r['asset']:dict(r) for r in db.execute('SELECT asset,COUNT(*) insider_wallets,SUM(sell_count) insider_sells,SUM(CASE WHEN depth<=1 AND sell_count>0 THEN 1 ELSE 0 END) insider_sellers FROM insider_wallets GROUP BY asset')} if 'insider_wallets' in tables else {}
         distributions={r['asset']:dict(r) for r in db.execute('SELECT * FROM distribution_analysis')} if 'distribution_analysis' in tables else {}
         reputations={r['creator']:dict(r) for r in db.execute('SELECT * FROM creator_reputation')} if 'creator_reputation' in tables else {}
+        socials={r['asset']:dict(r) for r in db.execute('SELECT * FROM social_identity')} if 'social_identity' in tables else {}
         deployer_launch_counts=Counter(launch_deployers.values())
         deployer_assets=defaultdict(list)
         for token,deployer in launch_deployers.items():deployer_assets[deployer].append(token)
@@ -226,6 +227,9 @@ def read(dbpath, asset=None, offset=0):
             rep=reputations.get(deployer,{})
             for key in ('launches','indexed_assets','survivors','runners','rugs','positive_alerts','runner_rate','rug_rate','median_peak_multiple','reputation_score','classification','confidence'):
                 c['creator_'+key]=rep.get(key)
+            social=socials.get(c['id'],{})
+            for key in ('website','x_url','telegram_url','discord_url','source_count','cross_linked','score','confidence','status'):
+                c['social_'+key]=social.get(key)
             c['deployer_launch_count']=deployer_launch_counts.get(deployer,0)
             c['deployer_other_assets']=[a for a in deployer_assets.get(deployer,()) if a!=c['id']][:10]
             c['dev_buy_count']=sum(name in ('CurveBuy','DexBuy') and wallet==deployer for name,wallet in c['trade_wallets']) if deployer else 0
@@ -276,6 +280,7 @@ def read(dbpath, asset=None, offset=0):
         health.update(market_heartbeat=meta.get('market_heartbeat'),market_age_seconds=age(meta.get('market_heartbeat')),market_assets=int(meta.get('market_assets','0')))
         health.update(capital_flow_heartbeat=meta.get('capital_flow_heartbeat'),capital_flow_age_seconds=age(meta.get('capital_flow_heartbeat')),capital_flow_wallet_assets=int(meta.get('capital_flow_wallet_assets','0')),capital_flow_clusters=int(meta.get('capital_flow_clusters','0')),capital_migrations=int(meta.get('capital_migrations','0')))
         health.update(creator_graph_heartbeat=meta.get('creator_graph_heartbeat'),creator_graph_age_seconds=age(meta.get('creator_graph_heartbeat')),creator_assets=int(meta.get('creator_assets','0')),insider_wallets=int(meta.get('insider_wallets','0')),creator_reputations=int(meta.get('creator_reputations','0')))
+        health.update(social_heartbeat=meta.get('social_heartbeat'),social_age_seconds=age(meta.get('social_heartbeat')),social_assets=int(meta.get('social_assets','0')),social_cross_linked=int(meta.get('social_cross_linked','0')))
         protocols=[dict(r) for r in db.execute('SELECT * FROM protocol_sources ORDER BY status,name')] if 'protocol_sources' in tables else []
         births=[]
         if 'topology_observations' in tables:
