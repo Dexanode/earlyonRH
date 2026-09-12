@@ -8,6 +8,7 @@ import sqlite3
 import time
 from urllib import parse, request
 import uuid
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from listener import database, now, set_meta
 from market_normalizer import schema as market_schema
@@ -85,12 +86,15 @@ def reconcile_asset(db,asset,participants=False):
     old=db.execute('SELECT * FROM gmgn_reconciliation WHERE asset=?',(asset,)).fetchone();stamp=now()
     documents={}
     errors=[]
-    for label,path in (('info','/v1/token/info'),('pool','/v1/token/pool_info'),('security','/v1/token/security')):
-        try:documents[label]=gmgn(path,asset)
-        except (OSError,ValueError) as exc:errors.append(label+':'+type(exc).__name__)
+    jobs=[('info','/v1/token/info',None),('pool','/v1/token/pool_info',None),('security','/v1/token/security',None)]
     if participants:
-        for label,path in (('holders','/v1/market/token_top_holders'),('traders','/v1/market/token_top_traders')):
-            try:documents[label]=gmgn(path,asset,{'limit':20,'order_by':'amount_percentage','direction':'desc'})
+        extra={'limit':20,'order_by':'amount_percentage','direction':'desc'}
+        jobs.extend([('holders','/v1/market/token_top_holders',extra),('traders','/v1/market/token_top_traders',extra)])
+    with ThreadPoolExecutor(max_workers=len(jobs)) as pool:
+        futures={pool.submit(gmgn,path,asset,extra):label for label,path,extra in jobs}
+        for future in as_completed(futures):
+            label=futures[future]
+            try:documents[label]=future.result()
             except (OSError,ValueError) as exc:errors.append(label+':'+type(exc).__name__)
     merged=values(documents);local=db.execute('SELECT price_usd,market_cap_usd,liquidity_usd FROM market_snapshots WHERE asset=?',(asset,)).fetchone()
     local=dict(local) if local else {};first=old['first_seen_at'] if old else stamp
