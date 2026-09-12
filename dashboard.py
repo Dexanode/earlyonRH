@@ -178,6 +178,8 @@ def read(dbpath, asset=None, offset=0):
             migration_signal={r['target_asset']:dict(r) for r in db.execute(sql)}
         markets={r['asset']:dict(r) for r in db.execute('SELECT * FROM market_snapshots')} if 'market_snapshots' in tables else {}
         token_metadata={r['address']:dict(r) for r in db.execute('SELECT * FROM token_metadata')} if 'token_metadata' in tables else {}
+        gmgn_markets={r['asset']:dict(r) for r in db.execute('SELECT * FROM gmgn_reconciliation')} if 'gmgn_reconciliation' in tables else {}
+        launchpad_lifecycles={r['asset']:dict(r) for r in db.execute('SELECT * FROM launchpad_lifecycle')} if 'launchpad_lifecycle' in tables else {}
         market_history={}
         if 'market_observations' in tables:
             for row in db.execute("""SELECT asset,COUNT(*) observations,
@@ -212,6 +214,11 @@ def read(dbpath, asset=None, offset=0):
                 value=market.get(key)
                 if key in ('symbol','name') and not value:value=meta_token.get(key)
                 c['market_'+key if key in ('source','status') else key]=value
+            gmgn=gmgn_markets.get(c['id'],{});life=launchpad_lifecycles.get(c['id'],{})
+            for key in ('first_seen_at','last_seen_at','price_usd','market_cap_usd','liquidity_usd','holder_count','security_status','price_delta_pct','market_cap_delta_pct','liquidity_delta_pct','error'):
+                c['gmgn_'+key]=gmgn.get(key)
+            for key in ('stage','created_at','creator','first_buy_at','seconds_to_first_buy','buys','sells','unique_buyers','curve_progress_pct','migrated_at','seconds_to_migration','metadata_seen_at','gmgn_seen_at'):
+                c['launch_'+key]=life.get(key)
             history=market_history.get(c['id'],{})
             c['market_observations']=history.get('observations',0)
             c['observation_span_seconds']=history.get('observation_span_seconds',0) or 0
@@ -278,10 +285,12 @@ def read(dbpath, asset=None, offset=0):
                 item=dict(row);item['evidence']=json.loads(item['evidence'])
                 life=db.execute('SELECT * FROM alert_lifecycle WHERE alert_id=?',(item['id'],)).fetchone() if 'alert_lifecycle' in tables else None
                 item['lifecycle']=dict(life) if life else None;alerts.append(item)
-                item['milestones']=[dict(r) for r in db.execute('SELECT multiple,reached_at,peak_return FROM alert_milestones WHERE asset=? ORDER BY multiple',(item['asset'],)).fetchall()] if 'alert_milestones' in tables else []
+                item['milestones']=[dict(r) for r in db.execute("SELECT multiple,reached_at,peak_return,confirmed_samples,confirmation_span_seconds,status FROM alert_milestones WHERE asset=? AND status!='legacy-unverified' ORDER BY multiple",(item['asset'],)).fetchall()] if 'alert_milestones' in tables else []
         health.update(wallet_profiler_heartbeat=meta.get('wallet_profiler_heartbeat'),wallet_profiler_age_seconds=age(meta.get('wallet_profiler_heartbeat')),wallet_profiles=int(meta.get('wallet_profiles','0')),wallet_clusters=int(meta.get('wallet_clusters','0')))
         health.update(wallet_pnl_heartbeat=meta.get('wallet_pnl_heartbeat'),wallet_pnl_age_seconds=age(meta.get('wallet_pnl_heartbeat')),wallet_pnl_wallets=int(meta.get('wallet_pnl_wallets','0')))
         health.update(market_heartbeat=meta.get('market_heartbeat'),market_age_seconds=age(meta.get('market_heartbeat')),market_assets=int(meta.get('market_assets','0')))
+        health.update(reconciler_heartbeat=meta.get('reconciler_heartbeat'),reconciler_age_seconds=age(meta.get('reconciler_heartbeat')),
+                      reconciled_assets=int(meta.get('reconciled_assets','0')),launchpad_lifecycles=int(meta.get('launchpad_lifecycles','0')))
         health.update(capital_flow_heartbeat=meta.get('capital_flow_heartbeat'),capital_flow_age_seconds=age(meta.get('capital_flow_heartbeat')),capital_flow_wallet_assets=int(meta.get('capital_flow_wallet_assets','0')),capital_flow_clusters=int(meta.get('capital_flow_clusters','0')),capital_migrations=int(meta.get('capital_migrations','0')))
         health.update(creator_graph_heartbeat=meta.get('creator_graph_heartbeat'),creator_graph_age_seconds=age(meta.get('creator_graph_heartbeat')),creator_assets=int(meta.get('creator_assets','0')),insider_wallets=int(meta.get('insider_wallets','0')),creator_reputations=int(meta.get('creator_reputations','0')))
         health.update(social_heartbeat=meta.get('social_heartbeat'),social_age_seconds=age(meta.get('social_heartbeat')),social_assets=int(meta.get('social_assets','0')),social_cross_linked=int(meta.get('social_cross_linked','0')))

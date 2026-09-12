@@ -84,6 +84,18 @@ services:
       options:
         max-size: "10m"
         max-file: "3"
+  reconciler:
+    build: .
+    command: ["python", "reconciler.py", "--db", "data/live.sqlite", "--interval", "30", "--limit", "10"]
+    env_file: .env
+    restart: unless-stopped
+    volumes:
+      - listener_data:/app/data
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
   topology:
     build: .
     command: ["python", "topology.py", "--db", "data/live.sqlite"]

@@ -107,6 +107,7 @@ class AlertTests(unittest.TestCase):
         recent=(dt.datetime.now(dt.timezone.utc)-dt.timedelta(minutes=1)).isoformat()
         with self.db:
             self.db.execute('CREATE TABLE market_snapshots(asset TEXT PRIMARY KEY,price_quote REAL,decimals INTEGER,quote_decimals INTEGER)')
+            self.db.execute('CREATE TABLE market_observations(asset TEXT,observed_at TEXT,price_quote REAL)')
             self.db.execute('INSERT INTO market_snapshots VALUES(?,?,?,?)',(candidate()['id'],2.0,18,18))
             self.db.execute('INSERT INTO alerts(created_at,asset,rule,severity,title,score,evidence) VALUES(?,?,?,?,?,?,?)',(recent,candidate()['id'],'x','high','x',80,json.dumps({'source_wallets':[]})))
         self.assertEqual(track_lifecycle(self.db),1)
@@ -114,12 +115,26 @@ class AlertTests(unittest.TestCase):
         self.assertEqual((row['entry_price_quote'],row['current_return'],row['max_return']),(2.0,0.0,0.0))
         with self.db:self.db.execute('UPDATE market_snapshots SET price_quote=3')
         track_lifecycle(self.db);row=self.db.execute('SELECT * FROM alert_lifecycle').fetchone()
-        self.assertEqual((row['current_return'],row['max_return'],row['drawdown_from_ath']),(50.0,50.0,0.0))
-        with self.db:self.db.execute('UPDATE market_snapshots SET price_quote=6')
+        self.assertEqual((row['current_return'],row['max_return'],row['drawdown_from_ath']),(50.0,0.0,50.0))
+        with self.db:
+            self.db.execute('UPDATE market_snapshots SET price_quote=6')
+            base=dt.datetime.fromisoformat(recent)+dt.timedelta(seconds=5)
+            self.db.executemany('INSERT INTO market_observations VALUES(?,?,?)',[(candidate()['id'],(base+dt.timedelta(seconds=n)).isoformat(),value) for n,value in ((0,6),(20,6.1),(40,6.2))])
         track_lifecycle(self.db)
         self.assertEqual([r[0] for r in self.db.execute('SELECT multiple FROM alert_milestones ORDER BY multiple')],[2,3])
         track_lifecycle(self.db)
         self.assertEqual(self.db.execute('SELECT COUNT(*) FROM alert_milestones').fetchone()[0],2)
+
+    def test_lifecycle_rejects_single_snapshot_spike_as_milestone(self):
+        recent=(dt.datetime.now(dt.timezone.utc)-dt.timedelta(minutes=1)).isoformat();asset=candidate()['id']
+        with self.db:
+            self.db.execute('CREATE TABLE market_snapshots(asset TEXT PRIMARY KEY,price_quote REAL,decimals INTEGER,quote_decimals INTEGER)')
+            self.db.execute('CREATE TABLE market_observations(asset TEXT,observed_at TEXT,price_quote REAL)')
+            self.db.execute('INSERT INTO market_snapshots VALUES(?,?,?,?)',(asset,5.0,18,18))
+            self.db.execute('INSERT INTO alerts(created_at,asset,rule,severity,title,score,evidence) VALUES(?,?,?,?,?,?,?)',(recent,asset,'x','high','x',80,'{}'))
+            self.db.execute('INSERT INTO market_observations VALUES(?,?,?)',(asset,(dt.datetime.fromisoformat(recent)+dt.timedelta(seconds=10)).isoformat(),5.0))
+        track_lifecycle(self.db)
+        self.assertEqual(self.db.execute('SELECT COUNT(*) FROM alert_milestones').fetchone()[0],0)
 
     def test_consensus_requires_profitable_and_independent_wallets(self):
         good=candidate(profitable_wallets_5m=1,profitable_wallets_15m=2,profitable_wallets_30m=3,independent_profitable_wallets_30m=2,symbol='REAL',name='Real',market_status='quote-only')

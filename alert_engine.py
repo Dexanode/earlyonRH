@@ -56,7 +56,9 @@ def schema(db):
         id INTEGER PRIMARY KEY AUTOINCREMENT, alert_id INTEGER NOT NULL,
         asset TEXT NOT NULL, multiple INTEGER NOT NULL, reached_at TEXT NOT NULL,
         peak_return REAL NOT NULL, status TEXT NOT NULL DEFAULT 'pending',
-        delivered_at TEXT, error TEXT, UNIQUE(asset,multiple));
+        delivered_at TEXT, error TEXT, confirmed_samples INTEGER NOT NULL DEFAULT 0,
+        confirmation_span_seconds INTEGER NOT NULL DEFAULT 0,
+        UNIQUE(asset,multiple));
     ''')
     columns={r[1] for r in db.execute('PRAGMA table_info(alert_lifecycle)')}
     if 'tracking_started_at' not in columns:
@@ -66,6 +68,15 @@ def schema(db):
     for column in ('discovery_entry_price_quote','discovery_ath_price_quote','discovery_current_return','discovery_max_return'):
         if column not in columns:
             with db:db.execute(f'ALTER TABLE alert_lifecycle ADD COLUMN {column} REAL')
+    milestone_columns={r[1] for r in db.execute('PRAGMA table_info(alert_milestones)')}
+    for column,definition in (('confirmed_samples','INTEGER NOT NULL DEFAULT 0'),('confirmation_span_seconds','INTEGER NOT NULL DEFAULT 0')):
+        if column not in milestone_columns:
+            with db:db.execute(f'ALTER TABLE alert_milestones ADD COLUMN {column} {definition}')
+    migrated=db.execute("SELECT value FROM meta WHERE key='milestone_confirmation_v2'").fetchone()
+    if not migrated:
+        with db:
+            db.execute("UPDATE alert_milestones SET status='legacy-unverified',error='created before three-observation confirmation' WHERE status IN ('pending','retry','sent')")
+            set_meta(db,'milestone_confirmation_v2','1')
 
 
 def _pct(price, entry):
@@ -93,11 +104,16 @@ def track_lifecycle(db):
                 if quote_raw and token_raw:trade_points.append((trade['event_timestamp'] or 0,(quote_raw/(10**market['quote_decimals']))/(token_raw/(10**market['decimals']))))
         alert_epoch=int(created.timestamp());at_alert=[p for stamp,p in trade_points if stamp<=alert_epoch]
         entry=at_alert[-1] if at_alert else (trade_points[0][1] if trade_points else (float(old['entry_price_quote']) if old and old['entry_price_quote'] else price))
-        after_alert=sorted(p for stamp,p in trade_points if stamp>=alert_epoch)
-        # A single migration/pool-init fill can imply an impossible spot peak.
-        # Require three prints before treating a level as a confirmed ATH.
-        confirmed_trade_peak=after_alert[-3] if len(after_alert)>=3 else (after_alert[-1] if after_alert else price)
-        ath=max(price,confirmed_trade_peak)
+        observations=[]
+        if 'market_observations' in tables:
+            observations=[(row['observed_at'],float(row['price_quote'])) for row in db.execute(
+                "SELECT observed_at,price_quote FROM market_observations WHERE asset=? AND observed_at>=? AND price_quote>0 ORDER BY observed_at",
+                (alert['asset'],alert['created_at']))]
+        # Confirmed ATH is the third-highest independent market observation.
+        # A lone indexer spike, migration fill, or current snapshot cannot create it.
+        confirmed_prices=sorted(point[1] for point in observations)
+        confirmed_peak=confirmed_prices[-3] if len(confirmed_prices)>=3 else (float(old['ath_price_quote']) if old and old['ath_price_quote'] else entry)
+        ath=max(entry,confirmed_peak)
         checkpoints={k:(old[k] if old else None) for k in ('return_5m','return_15m','return_1h','return_6h')}
         for key,seconds in (('return_5m',300),('return_15m',900),('return_1h',3600),('return_6h',21600)):
             if checkpoints[key] is None and elapsed>=seconds:checkpoints[key]=_pct(price,entry)
@@ -114,8 +130,17 @@ def track_lifecycle(db):
         columns='alert_id,updated_at,tracking_started_at,entry_price_quote,latest_price_quote,ath_price_quote,return_5m,return_15m,return_1h,return_6h,current_return,max_return,drawdown_from_ath,discovery_entry_price_quote,discovery_ath_price_quote,discovery_current_return,discovery_max_return,source_wallets,wallets_sold,post_alert_buys,post_alert_sells'
         with db:db.execute(f'INSERT OR REPLACE INTO alert_lifecycle({columns}) VALUES('+','.join('?'*21)+')',values)
         for multiple in (2,3,5,10):
-            if maximum is not None and maximum>=((multiple-1)*100):
-                with db:db.execute('INSERT OR IGNORE INTO alert_milestones(alert_id,asset,multiple,reached_at,peak_return) VALUES(?,?,?,?,?)',(alert['id'],alert['asset'],multiple,now(),maximum))
+            qualifying=[stamp for stamp,value in observations if value>=entry*multiple]
+            if len(qualifying)>=3:
+                first=dt.datetime.fromisoformat(qualifying[0]);last=dt.datetime.fromisoformat(qualifying[-1]);span=max(0,int((last-first).total_seconds()))
+                if span>=30:
+                    with db:db.execute('''INSERT INTO alert_milestones(alert_id,asset,multiple,reached_at,peak_return,confirmed_samples,confirmation_span_seconds)
+                      VALUES(?,?,?,?,?,?,?) ON CONFLICT(asset,multiple) DO UPDATE SET
+                      alert_id=excluded.alert_id,reached_at=excluded.reached_at,peak_return=excluded.peak_return,
+                      confirmed_samples=excluded.confirmed_samples,confirmation_span_seconds=excluded.confirmation_span_seconds,
+                      status=CASE WHEN alert_milestones.status='legacy-unverified' THEN 'pending' ELSE alert_milestones.status END,
+                      error=CASE WHEN alert_milestones.status='legacy-unverified' THEN NULL ELSE alert_milestones.error END''',
+                      (alert['id'],alert['asset'],multiple,qualifying[0],maximum,len(qualifying),span))
         updated+=1
     return updated
 
@@ -137,12 +162,14 @@ def telegram_text(alert):
     liq_usd=e.get('liquidity_usd') if e.get('liquidity_usd') is not None else e.get('liquidity_quote')*fx if e.get('liquidity_quote') is not None and fx else None
     mc=metric(mc_usd,'$') if mc_usd is not None else metric(e.get('market_cap_quote'))+' '+quote
     liq=metric(liq_usd,'$') if liq_usd is not None else metric(e.get('liquidity_quote'))+' '+quote
+    progress=f" · curve {e.get('launch_curve_progress_pct')}%" if e.get('launch_curve_progress_pct') is not None else ''
+    lifecycle=f"{e.get('protocol') or 'unknown'} · {e.get('launch_stage') or 'observed'}{progress} · GMGN holders {e.get('gmgn_holder_count') if e.get('gmgn_holder_count') is not None else '—'}"
     flow=f"Repeat {e.get('ordered_repeat_wallets',0)} · size-up {e.get('increasing_size_wallets',0)} · retained {e.get('retained_wallets',0)} · qualified migration 5m {e.get('qualified_migrating_wallets_5m',0)}"
     creator=f"{e.get('creator_classification') or 'insufficient-history'} · score {e.get('creator_reputation_score') if e.get('creator_reputation_score') is not None else '—'} · launches {e.get('creator_launches') or 0} · runners/rugs {e.get('creator_runners') or 0}/{e.get('creator_rugs') or 0}"
     social=' · '.join(f'<a href="{html.escape(u)}">{label}</a>' for label,u in [('Website',e.get('social_website')),('X',e.get('social_x_url')),('Telegram',e.get('social_telegram_url')),('Discord',e.get('social_discord_url'))] if u) or 'Social identity belum ditemukan'
     distribution=f"{e.get('distribution_classification') or 'insufficient-evidence'} · bundle {e.get('bundle_score') if e.get('bundle_score') is not None else '—'} · linked buyers {e.get('creator_linked_early_buyers') or 0}"
     gmgn=f'https://gmgn.ai/robinhood/token/{alert["asset"]}'
-    return (f"🔎 <b>${symbol} — {html.escape(alert['title'])}</b>\n{name}\n\n<b>CA</b> · tap untuk copy\n<code>{asset}</code>\n\n<b>MARKET</b>\nMC {mc} · Liq {liq}\nVol 1h {metric(e.get('volume_1h_quote'))} {html.escape(quote)}\n5m {metric(e.get('change_5m'))}% · 1h {metric(e.get('change_1h'))}%\nBuy/sell {e.get('buys',0)}/{e.get('sells',0)} · buyers {e.get('unique_buyers',0)}\n\n<b>FLOW</b>\n{flow}\nSafety {html.escape(e.get('safety_status','unknown'))} · score {alert['score'] or '—'}\n\n<b>CREATOR</b>\n{html.escape(creator)}\n{html.escape(distribution)}\n{social} · {html.escape(e.get('social_status') or 'no-social-evidence')}\n\n<b>BUYERS</b>\n{proof}\n\n<a href=\"{gmgn}\">📈 Open token di GMGN</a>\n<i>Onchain evidence; contract dan exit path tetap perlu diverifikasi.</i>")[:4000]
+    return (f"🔎 <b>${symbol} — {html.escape(alert['title'])}</b>\n{name}\n\n<b>CA</b> · tap untuk copy\n<code>{asset}</code>\n\n<b>LIFECYCLE</b>\n{html.escape(lifecycle)}\n\n<b>MARKET</b>\nMC {mc} · Liq {liq}\nVol 1h {metric(e.get('volume_1h_quote'))} {html.escape(quote)}\n5m {metric(e.get('change_5m'))}% · 1h {metric(e.get('change_1h'))}%\nBuy/sell {e.get('buys',0)}/{e.get('sells',0)} · buyers {e.get('unique_buyers',0)}\n\n<b>FLOW</b>\n{flow}\nSafety {html.escape(e.get('safety_status','unknown'))} · score {alert['score'] or '—'}\n\n<b>CREATOR</b>\n{html.escape(creator)}\n{html.escape(distribution)}\n{social} · {html.escape(e.get('social_status') or 'no-social-evidence')}\n\n<b>BUYERS</b>\n{proof}\n\n<a href=\"{gmgn}\">📈 Open token di GMGN</a>\n<i>Onchain evidence; contract dan exit path tetap perlu diverifikasi.</i>")[:4000]
 
 
 def hydrate_metadata(db, alert):
@@ -328,7 +355,7 @@ def source_wallets(db, asset, limit=5, preferred=None):
 
 
 def evidence(c, db=None):
-    keys=('protocol','activity_score','conviction_score','safety_score','safety_status','buys','sells','buys_5m','sells_5m','last_trade_age_seconds','dev_buy_count','dev_sell_count','dev_exit_detected','deployer','creator_attribution','creator_confidence','insider_wallets','insider_sell_count','insider_exit_detected','creator_cluster_share','early_recipients','early_buyers','creator_linked_early_buyers','same_block_buyers','similar_size_buyers','shared_funding_clusters','bundle_score','distribution_classification','creator_launches','creator_indexed_assets','creator_survivors','creator_runners','creator_rugs','creator_runner_rate','creator_rug_rate','creator_median_peak_multiple','creator_reputation_score','creator_classification','creator_confidence','social_website','social_x_url','social_telegram_url','social_discord_url','social_source_count','social_cross_linked','social_score','social_confidence','social_status','deployer_launch_count','deployer_other_assets','unique_buyers','repeat_buyers','unique_senders','routed_share','smart_wallets','best_wallet_score','cluster_count','cluster_members','ordered_repeat_wallets','increasing_size_wallets','retained_wallets','provisional_funding_roots','shared_sender_wallets','shared_sender_clusters','migrating_wallets','migration_sources','fastest_migration_seconds','qualified_migrating_wallets_5m','activity_acceleration','age_blocks','buy_sell_ratio','market_observations','observation_span_seconds','drawdown_from_observed_high','safety_findings','symbol','name','quote_symbol','quote_decimals','price_quote','price_usd','market_cap_quote','market_cap_usd','liquidity_quote','liquidity_usd','volume_5m_quote','volume_1h_quote','volume_24h_quote','change_5m','change_1h','change_6h','change_24h','market_source','market_status','profitable_wallets_5m','profitable_wallets_15m','profitable_wallets_30m','independent_profitable_wallets_30m','unattributed_profitable_wallets_30m','consensus_proof')
+    keys=('protocol','activity_score','conviction_score','safety_score','safety_status','buys','sells','buys_5m','sells_5m','last_trade_age_seconds','dev_buy_count','dev_sell_count','dev_exit_detected','deployer','creator_attribution','creator_confidence','insider_wallets','insider_sell_count','insider_exit_detected','creator_cluster_share','early_recipients','early_buyers','creator_linked_early_buyers','same_block_buyers','similar_size_buyers','shared_funding_clusters','bundle_score','distribution_classification','creator_launches','creator_indexed_assets','creator_survivors','creator_runners','creator_rugs','creator_runner_rate','creator_rug_rate','creator_median_peak_multiple','creator_reputation_score','creator_classification','creator_confidence','social_website','social_x_url','social_telegram_url','social_discord_url','social_source_count','social_cross_linked','social_score','social_confidence','social_status','deployer_launch_count','deployer_other_assets','unique_buyers','repeat_buyers','unique_senders','routed_share','smart_wallets','best_wallet_score','cluster_count','cluster_members','ordered_repeat_wallets','increasing_size_wallets','retained_wallets','provisional_funding_roots','shared_sender_wallets','shared_sender_clusters','migrating_wallets','migration_sources','fastest_migration_seconds','qualified_migrating_wallets_5m','activity_acceleration','age_blocks','buy_sell_ratio','market_observations','observation_span_seconds','drawdown_from_observed_high','safety_findings','symbol','name','quote_symbol','quote_decimals','price_quote','price_usd','market_cap_quote','market_cap_usd','liquidity_quote','liquidity_usd','volume_5m_quote','volume_1h_quote','volume_24h_quote','change_5m','change_1h','change_6h','change_24h','market_source','market_status','gmgn_first_seen_at','gmgn_last_seen_at','gmgn_price_usd','gmgn_market_cap_usd','gmgn_liquidity_usd','gmgn_holder_count','gmgn_security_status','gmgn_price_delta_pct','gmgn_market_cap_delta_pct','gmgn_liquidity_delta_pct','launch_stage','launch_created_at','launch_creator','launch_first_buy_at','launch_seconds_to_first_buy','launch_buys','launch_sells','launch_unique_buyers','launch_curve_progress_pct','launch_migrated_at','launch_seconds_to_migration','launch_metadata_seen_at','launch_gmgn_seen_at','profitable_wallets_5m','profitable_wallets_15m','profitable_wallets_30m','independent_profitable_wallets_30m','unattributed_profitable_wallets_30m','consensus_proof')
     out={k:c.get(k) for k in keys}
     preferred=[p['wallet'] for p in c.get('consensus_proof',[])]
     wallets=source_wallets(db,c['id'],preferred=preferred) if db else []
