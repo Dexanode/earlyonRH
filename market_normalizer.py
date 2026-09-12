@@ -6,12 +6,14 @@ import logging
 import os
 import sqlite3
 import time
+from urllib import request
 
 from listener import RPC, RpcError, database, now, set_meta
 
 LOG=logging.getLogger('market-normalizer')
 DECIMALS='0x313ce567';SYMBOL='0x95d89b41';NAME='0x06fdde03';SUPPLY='0x18160ddd';BALANCE='0x70a08231'
 ZERO='0x'+'0'*40
+DEXSCREENER='https://api.dexscreener.com/latest/dex/tokens/'
 
 
 def schema(db):
@@ -88,6 +90,17 @@ def calculate(rows,token_decimals,quote_decimals,stamp):
             'change_5m':pct(current,at(300)),'change_1h':pct(current,at(3600)),'change_6h':pct(current,at(21600)),'change_24h':pct(current,at(86400))}
 
 
+def indexed_pool(asset, timeout=8):
+    """Select the deepest matching Robinhood pool from a free market index."""
+    req=request.Request(DEXSCREENER+asset,headers={'Accept':'application/json','User-Agent':'earlyonRH/1'})
+    with request.urlopen(req,timeout=timeout) as response:payload=json.load(response)
+    pairs=[]
+    for pair in payload.get('pairs') or []:
+        addresses={(pair.get('baseToken') or {}).get('address','').lower(),(pair.get('quoteToken') or {}).get('address','').lower()}
+        if pair.get('chainId')=='robinhood' and asset.lower() in addresses:pairs.append(pair)
+    return max(pairs,key=lambda p:float((p.get('liquidity') or {}).get('usd') or 0)) if pairs else None
+
+
 def normalize_asset(db,rpc,asset):
     launch=db.execute("SELECT decoded FROM events WHERE asset=? AND name='TokenLaunched' ORDER BY block_number LIMIT 1",(asset,)).fetchone()
     watch=db.execute("SELECT address FROM watches WHERE asset=? AND kind='curve' ORDER BY created_block LIMIT 1",(asset,)).fetchone()
@@ -106,10 +119,25 @@ def normalize_asset(db,rpc,asset):
     mc=metrics['price_quote']*supply if supply is not None else None
     stamp=now()
     source='onchain-curve-events+native-balance' if quote.lower()==ZERO else 'onchain-curve-events+erc20-balance'
-    values=(asset,stamp,token['symbol'],token['name'],token['decimals'],quote,quote_meta['symbol'],quote_meta['decimals'],metrics['price_quote'],None,mc,None,liquidity,None,metrics['volume_5m_quote'],metrics['volume_1h_quote'],metrics['volume_24h_quote'],metrics['change_5m'],metrics['change_1h'],metrics['change_6h'],metrics['change_24h'],source,'quote-only',None)
+    price_quote,price_usd,mc_usd,liq_usd=metrics['price_quote'],None,None,None
+    changes=[metrics['change_5m'],metrics['change_1h'],metrics['change_6h'],metrics['change_24h']]
+    graduated=db.execute("SELECT 1 FROM events WHERE asset=? AND name IN ('CurveCompleted','LaunchSwept') LIMIT 1",(asset,)).fetchone()
+    if graduated:
+        try:
+            pool=indexed_pool(asset)
+            if pool:
+                price_quote=float(pool.get('priceNative') or price_quote)
+                price_usd=float(pool['priceUsd']) if pool.get('priceUsd') else None
+                mc_usd=float(pool.get('marketCap') or pool.get('fdv') or 0) or None
+                liq_usd=float((pool.get('liquidity') or {}).get('usd') or 0) or None
+                change=pool.get('priceChange') or {};changes=[change.get(k) for k in ('m5','h1','h6','h24')]
+                source='onchain-graduation+dexscreener-v4'
+                quote_meta={'symbol':(pool.get('quoteToken') or {}).get('symbol') or quote_meta['symbol'],'decimals':quote_meta['decimals']}
+        except (OSError,ValueError,json.JSONDecodeError) as exc:LOG.warning('graduated pool %s delayed: %s',asset,type(exc).__name__)
+    values=(asset,stamp,token['symbol'],token['name'],token['decimals'],quote,quote_meta['symbol'],quote_meta['decimals'],price_quote,price_usd,mc,mc_usd,liquidity,liq_usd,metrics['volume_5m_quote'],metrics['volume_1h_quote'],metrics['volume_24h_quote'],*changes,source,'indexed-market' if 'dexscreener' in source else 'quote-only',None)
     with db:
         db.execute('INSERT OR REPLACE INTO market_snapshots VALUES('+','.join('?'*24)+')',values)
-        db.execute('INSERT OR REPLACE INTO market_observations VALUES(?,?,?,?,?,?)',(asset,stamp,metrics['price_quote'],liquidity,metrics['volume_5m_quote'],metrics['change_5m']))
+        db.execute('INSERT OR REPLACE INTO market_observations VALUES(?,?,?,?,?,?)',(asset,stamp,price_quote,liq_usd if liq_usd is not None else liquidity,metrics['volume_5m_quote'],changes[0]))
         db.execute("DELETE FROM market_observations WHERE strftime('%s',observed_at)<strftime('%s','now','-2 days')")
     return True
 
