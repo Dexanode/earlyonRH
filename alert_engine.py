@@ -38,6 +38,11 @@ def schema(db):
         alert_id INTEGER PRIMARY KEY, channel TEXT NOT NULL, status TEXT NOT NULL,
         attempts INTEGER NOT NULL DEFAULT 0, last_attempt_at TEXT, delivered_at TEXT,
         error TEXT, FOREIGN KEY(alert_id) REFERENCES alerts(id));
+      CREATE TABLE IF NOT EXISTS alert_milestones(
+        id INTEGER PRIMARY KEY AUTOINCREMENT, alert_id INTEGER NOT NULL,
+        asset TEXT NOT NULL, multiple INTEGER NOT NULL, reached_at TEXT NOT NULL,
+        peak_return REAL NOT NULL, status TEXT NOT NULL DEFAULT 'pending',
+        delivered_at TEXT, error TEXT, UNIQUE(asset,multiple));
     ''')
     columns={r[1] for r in db.execute('PRAGMA table_info(alert_lifecycle)')}
     if 'tracking_started_at' not in columns:
@@ -80,6 +85,9 @@ def track_lifecycle(db):
         values=(alert['id'],now(),started,entry,price,ath,checkpoints['return_5m'],checkpoints['return_15m'],checkpoints['return_1h'],checkpoints['return_6h'],current,maximum,drawdown,len(wallets),len(sold),buys,sells)
         columns='alert_id,updated_at,tracking_started_at,entry_price_quote,latest_price_quote,ath_price_quote,return_5m,return_15m,return_1h,return_6h,current_return,max_return,drawdown_from_ath,source_wallets,wallets_sold,post_alert_buys,post_alert_sells'
         with db:db.execute(f'INSERT OR REPLACE INTO alert_lifecycle({columns}) VALUES('+','.join('?'*17)+')',values)
+        for multiple in (2,3,5,10):
+            if maximum is not None and maximum>=((multiple-1)*100):
+                with db:db.execute('INSERT OR IGNORE INTO alert_milestones(alert_id,asset,multiple,reached_at,peak_return) VALUES(?,?,?,?,?)',(alert['id'],alert['asset'],multiple,now(),maximum))
         updated+=1
     return updated
 
@@ -142,6 +150,26 @@ def deliver(db, token=None, chat_id=None, limit=10):
             sent+=1
         except Exception as exc:
             with db:db.execute("UPDATE alert_deliveries SET status='retry',attempts=attempts+1,last_attempt_at=?,error=? WHERE alert_id=?",(now(),str(exc)[:300],alert['id']))
+    return sent
+
+
+def deliver_milestones(db, token=None, chat_id=None, limit=10):
+    if not token or not chat_id:return 0
+    rows=db.execute("SELECT m.*,a.evidence FROM alert_milestones m JOIN alerts a ON a.id=m.alert_id WHERE m.status IN ('pending','retry') ORDER BY m.id LIMIT ?",(limit,)).fetchall();sent=0
+    for row in rows:
+        evidence=json.loads(row['evidence']);symbol=html.escape(evidence.get('symbol') or f"NEW-{row['asset'][2:8].upper()}")
+        asset=html.escape(row['asset']);gmgn=f"https://gmgn.ai/robinhood/token/{row['asset']}"
+        message=(f"🏁 <b>${symbol} MILESTONE {row['multiple']}X</b>\n\n"
+                 f"Peak sejak alert: <b>+{row['peak_return']:.1f}%</b>\n"
+                 f"CA\n<code>{asset}</code>\n\n<a href=\"{gmgn}\">📈 Open token di GMGN</a>")
+        try:
+            body=parse.urlencode({'chat_id':chat_id,'text':message,'parse_mode':'HTML','disable_web_page_preview':'true'}).encode()
+            with request.urlopen(request.Request(f'https://api.telegram.org/bot{token}/sendMessage',data=body),timeout=12) as response:
+                if response.status!=200:raise OSError(f'Telegram HTTP {response.status}')
+            with db:db.execute("UPDATE alert_milestones SET status='sent',delivered_at=?,error=NULL WHERE id=?",(now(),row['id']))
+            sent+=1
+        except Exception as exc:
+            with db:db.execute("UPDATE alert_milestones SET status='retry',error=? WHERE id=?",(str(exc)[:300],row['id']))
     return sent
 
 
@@ -332,6 +360,7 @@ def cycle(path, cooldown=1800, improvement=8):
                 db.execute("INSERT OR IGNORE INTO alert_deliveries(alert_id,channel,status,error) VALUES(?,'telegram',?,?)",(alert_id,status,None if status=='pending' else 'risk event for asset without prior positive alert'))
         suppress_untracked_risk_deliveries(db)
         delivered=deliver(db,os.environ.get('TELEGRAM_BOT_TOKEN'),os.environ.get('TELEGRAM_CHAT_ID'))
+        milestone_delivered=deliver_milestones(db,os.environ.get('TELEGRAM_BOT_TOKEN'),os.environ.get('TELEGRAM_CHAT_ID'))
         if emitted:tracked=track_lifecycle(db)
         with db:
             set_meta(db,'alert_heartbeat',now())
@@ -340,6 +369,7 @@ def cycle(path, cooldown=1800, improvement=8):
             set_meta(db,'alert_lifecycles',tracked)
             set_meta(db,'telegram_configured','1' if os.environ.get('TELEGRAM_BOT_TOKEN') and os.environ.get('TELEGRAM_CHAT_ID') else '0')
             set_meta(db,'telegram_last_delivered',delivered)
+            set_meta(db,'telegram_milestones_delivered',milestone_delivered)
         return emitted
     finally:db.close()
 

@@ -278,6 +278,7 @@ def read(dbpath, asset=None, offset=0):
                 item=dict(row);item['evidence']=json.loads(item['evidence'])
                 life=db.execute('SELECT * FROM alert_lifecycle WHERE alert_id=?',(item['id'],)).fetchone() if 'alert_lifecycle' in tables else None
                 item['lifecycle']=dict(life) if life else None;alerts.append(item)
+                item['milestones']=[dict(r) for r in db.execute('SELECT multiple,reached_at,peak_return FROM alert_milestones WHERE asset=? ORDER BY multiple',(item['asset'],)).fetchall()] if 'alert_milestones' in tables else []
         health.update(wallet_profiler_heartbeat=meta.get('wallet_profiler_heartbeat'),wallet_profiler_age_seconds=age(meta.get('wallet_profiler_heartbeat')),wallet_profiles=int(meta.get('wallet_profiles','0')),wallet_clusters=int(meta.get('wallet_clusters','0')))
         health.update(wallet_pnl_heartbeat=meta.get('wallet_pnl_heartbeat'),wallet_pnl_age_seconds=age(meta.get('wallet_pnl_heartbeat')),wallet_pnl_wallets=int(meta.get('wallet_pnl_wallets','0')))
         health.update(market_heartbeat=meta.get('market_heartbeat'),market_age_seconds=age(meta.get('market_heartbeat')),market_assets=int(meta.get('market_assets','0')))
