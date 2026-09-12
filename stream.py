@@ -253,9 +253,20 @@ async def consume(url, state):
 
 async def maintain(state, rpc):
     retry_at = 0
+    next_head_poll = 0
     while True:
         await asyncio.sleep(1)
         try:
+            # Some free WebSocket providers accept newHeads subscriptions but do
+            # not deliver them reliably. Keep log discovery on WSS and use two
+            # lightweight HTTP reads as a head/heartbeat fallback.
+            if state.connected and time.monotonic() >= next_head_poll and time.monotonic() - state.last_message >= 5:
+                next_head_poll = time.monotonic() + 5
+                height = int(await asyncio.to_thread(rpc.call, 'eth_blockNumber', []), 16)
+                header = await asyncio.to_thread(rpc.call, 'eth_getBlockByNumber', [hex(height), False])
+                if header:
+                    state.header(header)
+                    state.flush()
             if state.connected and time.monotonic() - state.last_message < 30:
                 state.flush()
             lo = int(get_meta(state.db, 'recovery_next') or 1)
@@ -282,7 +293,8 @@ async def maintain(state, rpc):
 
 
 async def run():
-    url, http = os.environ.get('RPC_WS_URL'), os.environ.get('RPC_HTTP_URL')
+    url = os.environ.get('RPC_WS_URL')
+    http = os.environ.get('STREAM_RPC_HTTP_URL') or os.environ.get('RPC_HTTP_URL')
     if not url or not http: raise ValueError('RPC_WS_URL and RPC_HTTP_URL are required')
     db = database('data/live.sqlite')
     if get_meta(db, 'chain') not in (None, str(CHAIN)): raise ValueError('wrong database chain')
