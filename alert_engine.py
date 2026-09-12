@@ -54,7 +54,10 @@ def track_lifecycle(db):
     """Update every alert against locally observed market and wallet activity."""
     tables={r[0] for r in db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
     if 'market_snapshots' not in tables:return 0
-    alerts=db.execute('SELECT id,created_at,asset,evidence FROM alerts').fetchall();updated=0
+    cutoff=(dt.datetime.now(dt.timezone.utc)-dt.timedelta(hours=7)).isoformat()
+    # Six hours is the final lifecycle checkpoint. Older alerts are immutable
+    # calibration history and must not delay evaluation of fresh flow.
+    alerts=db.execute('SELECT id,created_at,asset,evidence FROM alerts WHERE created_at>=?',(cutoff,)).fetchall();updated=0
     for alert in alerts:
         market=db.execute('SELECT price_quote FROM market_snapshots WHERE asset=?',(alert['asset'],)).fetchone()
         if not market or not market['price_quote']:continue
@@ -271,7 +274,9 @@ def cycle(path, cooldown=1800, improvement=8):
     snapshot=read(path)
     db=database(path);schema(db)
     try:
-        tracked=track_lifecycle(db)
+        # Record liveness before optional enrichment/evaluation work so an
+        # expensive candidate cannot make the worker appear dead.
+        with db:set_meta(db,'alert_heartbeat',now())
         health=snapshot['health']
         # Free WSS endpoints can reconnect between otherwise current heads. The
         # candidate-level live-flow gate still rejects trades older than 180s.
@@ -279,6 +284,7 @@ def cycle(path, cooldown=1800, improvement=8):
            or (health.get('age_seconds') or 10**9)>600 \
            or (health.get('lag_blocks') or 0)>100:
             return []
+        tracked=track_lifecycle(db)
         emitted=evaluate(db,snapshot['candidates'],cooldown,improvement)
         with db:
             for alert_id in emitted:
