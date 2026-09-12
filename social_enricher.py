@@ -56,7 +56,8 @@ def analyze(db,asset):
   for kind,url in [('website',website),('x',x_url),('telegram',tg),('discord',dc)]:
    if url:db.execute('INSERT INTO social_links VALUES(?,?,?,?,?,?)',(asset,kind,url,normalize(url),'dexscreener',int(linked and kind!='website')))
 def cycle(db,limit=20):
- schema(db);assets=[r[0] for r in db.execute("SELECT asset FROM market_snapshots WHERE status!='unknown' ORDER BY updated_at DESC LIMIT ?",(limit,))]
+ schema(db);assets=[r[0] for r in db.execute("""SELECT m.asset FROM market_snapshots m LEFT JOIN social_identity s ON s.asset=m.asset
+   WHERE m.status!='unknown' ORDER BY s.updated_at IS NULL DESC,s.updated_at ASC,m.updated_at DESC LIMIT ?""",(limit,))]
  for a in assets:
   try:analyze(db,a)
   except sqlite3.Error as exc:LOG.warning('social delayed %s %s',a,exc)
