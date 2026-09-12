@@ -272,7 +272,13 @@ def cycle(path, cooldown=1800, improvement=8):
     db=database(path);schema(db)
     try:
         tracked=track_lifecycle(db)
-        if snapshot['health'].get('state')!='healthy': return []
+        health=snapshot['health']
+        # Free WSS endpoints can reconnect between otherwise current heads. The
+        # candidate-level live-flow gate still rejects trades older than 180s.
+        if health.get('state') not in ('healthy','degraded','recovering-history') \
+           or (health.get('age_seconds') or 10**9)>600 \
+           or (health.get('lag_blocks') or 0)>100:
+            return []
         emitted=evaluate(db,snapshot['candidates'],cooldown,improvement)
         with db:
             for alert_id in emitted:

@@ -139,9 +139,11 @@ def top_assets(db, limit=10):
 
 def cycle(db, rpc, tx_limit=5):
     heartbeat = get_meta(db, 'heartbeat')
-    try: fresh = (dt.datetime.now(dt.timezone.utc)-dt.datetime.fromisoformat(heartbeat)).total_seconds() < 30
+    try: fresh = (dt.datetime.now(dt.timezone.utc)-dt.datetime.fromisoformat(heartbeat)).total_seconds() < 600
     except (TypeError, ValueError): fresh = False
-    if get_meta(db, 'status') != 'healthy' or not fresh:
+    try: near_head = int(get_meta(db,'head') or 0)-int(get_meta(db,'cursor') or 0) <= 100
+    except ValueError: near_head = False
+    if get_meta(db, 'status') not in ('healthy','degraded') or not fresh or not near_head:
         LOG.info('live listener is not healthy; enrichment paused')
         return
     assets = top_assets(db)
