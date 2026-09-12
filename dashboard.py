@@ -177,6 +177,7 @@ def read(dbpath, asset=None, offset=0):
             sql=f"SELECT m.target_asset,COUNT(DISTINCT m.wallet) migrating_wallets,COUNT(DISTINCT m.source_asset) migration_sources,MIN(m.latency_seconds) fastest_migration_seconds,{qualified} qualified_migrating_wallets_5m FROM capital_migrations m {join} GROUP BY m.target_asset"
             migration_signal={r['target_asset']:dict(r) for r in db.execute(sql)}
         markets={r['asset']:dict(r) for r in db.execute('SELECT * FROM market_snapshots')} if 'market_snapshots' in tables else {}
+        token_metadata={r['address']:dict(r) for r in db.execute('SELECT * FROM token_metadata')} if 'token_metadata' in tables else {}
         market_history={}
         if 'market_observations' in tables:
             for row in db.execute("""SELECT asset,COUNT(*) observations,
@@ -206,9 +207,11 @@ def read(dbpath, asset=None, offset=0):
             flow=consensus.get(c['id'],{});c['profitable_wallets_5m']=len(flow.get('w5',()))
             c['profitable_wallets_15m']=len(flow.get('w15',()));c['profitable_wallets_30m']=len(flow.get('w30',()))
             c['independent_profitable_wallets_30m']=len(flow.get('direct30',()));c['unattributed_profitable_wallets_30m']=len(flow.get('unknown30',()));c['consensus_proof']=flow.get('proof',[])
-            market=markets.get(c['id'],{})
+            market=markets.get(c['id'],{});meta_token=token_metadata.get(c['id'],{})
             for key in ('symbol','name','quote_symbol','quote_decimals','price_quote','price_usd','market_cap_quote','market_cap_usd','liquidity_quote','liquidity_usd','volume_5m_quote','volume_1h_quote','volume_24h_quote','change_5m','change_1h','change_6h','change_24h','source','status'):
-                c['market_'+key if key in ('source','status') else key]=market.get(key)
+                value=market.get(key)
+                if key in ('symbol','name') and not value:value=meta_token.get(key)
+                c['market_'+key if key in ('source','status') else key]=value
             history=market_history.get(c['id'],{})
             c['market_observations']=history.get('observations',0)
             c['observation_span_seconds']=history.get('observation_span_seconds',0) or 0

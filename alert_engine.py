@@ -85,7 +85,7 @@ def track_lifecycle(db):
 
 
 def telegram_text(alert):
-    e=json.loads(alert['evidence']);symbol=html.escape(e.get('symbol') or alert['asset'][:10]);name=html.escape(e.get('name') or 'Unnamed token');asset=html.escape(alert['asset'])
+    e=json.loads(alert['evidence']);raw_asset=alert['asset'];symbol=html.escape(e.get('symbol') or f'NEW-{raw_asset[2:8].upper()}');name=html.escape(e.get('name') or 'Metadata pending · launchpad token');asset=html.escape(raw_asset)
     wallets=e.get('source_wallets') or []
     decimals=e.get('quote_decimals');quote=e.get('quote_symbol') or 'quote'
     def amount(raw):

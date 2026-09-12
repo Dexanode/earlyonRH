@@ -169,8 +169,8 @@ def cycle(db,rpc,limit=25):
     assets=[r[0] for r in db.execute("SELECT asset FROM events WHERE name IN ('Create','CurveBuy','CurveSell') AND block_number>? GROUP BY asset ORDER BY COUNT(*) DESC LIMIT ?",(head-10000,limit))]
     tables={r[0] for r in db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
     if 'alerts' in tables:
-        tracked=[r[0] for r in db.execute("SELECT DISTINCT asset FROM alerts WHERE rule NOT IN ('dev-exit','contract-risk','serial-deployer') ORDER BY id DESC LIMIT ?",(limit,))]
-        assets=list(dict.fromkeys(assets+tracked))[:limit*2]
+        tracked=[r[0] for r in db.execute("SELECT DISTINCT asset FROM alerts WHERE rule IN ('onchain-flow-breakout','smart-money-consensus','smart-wallet-entry','repeat-qualified-flow','capital-rotation','coordinated-flow','trench-candidate','momentum-watch','early-watch') ORDER BY id DESC LIMIT ?",(limit,))]
+        assets=list(dict.fromkeys(tracked+assets))[:limit*2]
     ok=0
     for asset in assets:
         try:ok+=normalize_asset(db,rpc,asset)
@@ -186,7 +186,7 @@ def main():
     db=database(a.db);schema(db);rpc=RPC(url,attempts=2,spacing=.15)
     try:
         while True:
-            LOG.info('normalized assets=%s',cycle(db,rpc,a.limit));time.sleep(max(30,a.interval))
+            LOG.info('normalized assets=%s',cycle(db,rpc,a.limit));time.sleep(max(10,a.interval))
     finally:db.close()
 
 
