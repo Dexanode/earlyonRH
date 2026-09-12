@@ -81,8 +81,11 @@ def track_lifecycle(db):
                 if quote_raw and token_raw:trade_points.append((trade['event_timestamp'] or 0,(quote_raw/(10**market['quote_decimals']))/(token_raw/(10**market['decimals']))))
         alert_epoch=int(created.timestamp());at_alert=[p for stamp,p in trade_points if stamp<=alert_epoch]
         entry=at_alert[-1] if at_alert else (trade_points[0][1] if trade_points else (float(old['entry_price_quote']) if old and old['entry_price_quote'] else price))
-        after_alert=[p for stamp,p in trade_points if stamp>=alert_epoch]
-        ath=max([price,*after_alert,float(old['ath_price_quote'] or price) if old else price])
+        after_alert=sorted(p for stamp,p in trade_points if stamp>=alert_epoch)
+        # A single migration/pool-init fill can imply an impossible spot peak.
+        # Require three prints before treating a level as a confirmed ATH.
+        confirmed_trade_peak=after_alert[-3] if len(after_alert)>=3 else (after_alert[-1] if after_alert else price)
+        ath=max(price,confirmed_trade_peak)
         checkpoints={k:(old[k] if old else None) for k in ('return_5m','return_15m','return_1h','return_6h')}
         for key,seconds in (('return_5m',300),('return_15m',900),('return_1h',3600),('return_6h',21600)):
             if checkpoints[key] is None and elapsed>=seconds:checkpoints[key]=_pct(price,entry)
