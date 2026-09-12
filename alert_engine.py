@@ -10,10 +10,22 @@ import time
 from urllib import parse, request
 
 from dashboard import read
-from listener import database, now, set_meta
+from listener import RPC, database, now, set_meta
+from market_normalizer import metadata
 
 LOG = logging.getLogger('alerts')
 RISK_ONLY_RULES={'dev-exit','contract-risk','serial-deployer','insider-exit','possible-bundled-launch','creator-clustered-supply','toxic-creator-history'}
+NATIVE_USD_CACHE={'value':None,'at':0.0}
+
+
+def native_usd():
+    """Cached keyless ETH/USD quote used only for human-readable alert values."""
+    if NATIVE_USD_CACHE['value'] and time.time()-NATIVE_USD_CACHE['at']<60:return NATIVE_USD_CACHE['value']
+    try:
+        req=request.Request('https://api.coingecko.com/api/v3/simple/price?ids=ethereum&vs_currencies=usd',headers={'Accept':'application/json','User-Agent':'earlyonRH/1'})
+        with request.urlopen(req,timeout=8) as response:value=float(json.load(response)['ethereum']['usd'])
+        NATIVE_USD_CACHE.update(value=value,at=time.time());return value
+    except (OSError,KeyError,TypeError,ValueError):return NATIVE_USD_CACHE['value']
 
 
 def schema(db):
@@ -120,8 +132,11 @@ def telegram_text(alert):
         value=float(value)
         return prefix+(f'{value/1_000_000:.2f}m' if abs(value)>=1_000_000 else f'{value/1_000:.1f}k' if abs(value)>=1_000 else f'{value:.4g}')
     proof='\n'.join(f"• <a href=\"{w.get('wallet_url','')}\">{w['wallet'][:8]}…{w['wallet'][-6:]}</a> · buy {html.escape(amount(w.get('quote_in_raw')))} · repeat {w.get('buy_count',1)}× · win {w.get('win_rate') if w.get('win_rate') is not None else '—'}% · <a href=\"{w.get('buy_tx_url','')}\">TX</a>" for w in wallets[:5]) or '• Buyer detail belum cukup untuk diperingkat'
-    mc=metric(e.get('market_cap_usd'),'$') if e.get('market_cap_usd') is not None else metric(e.get('market_cap_quote'))+' '+quote
-    liq=metric(e.get('liquidity_usd'),'$') if e.get('liquidity_usd') is not None else metric(e.get('liquidity_quote'))+' '+quote
+    fx=native_usd() if quote.upper() in ('ETH','WETH') and (e.get('market_cap_quote') is not None or e.get('liquidity_quote') is not None) else None
+    mc_usd=e.get('market_cap_usd') if e.get('market_cap_usd') is not None else e.get('market_cap_quote')*fx if e.get('market_cap_quote') is not None and fx else None
+    liq_usd=e.get('liquidity_usd') if e.get('liquidity_usd') is not None else e.get('liquidity_quote')*fx if e.get('liquidity_quote') is not None and fx else None
+    mc=metric(mc_usd,'$') if mc_usd is not None else metric(e.get('market_cap_quote'))+' '+quote
+    liq=metric(liq_usd,'$') if liq_usd is not None else metric(e.get('liquidity_quote'))+' '+quote
     flow=f"Repeat {e.get('ordered_repeat_wallets',0)} · size-up {e.get('increasing_size_wallets',0)} · retained {e.get('retained_wallets',0)} · qualified migration 5m {e.get('qualified_migrating_wallets_5m',0)}"
     creator=f"{e.get('creator_classification') or 'insufficient-history'} · score {e.get('creator_reputation_score') if e.get('creator_reputation_score') is not None else '—'} · launches {e.get('creator_launches') or 0} · runners/rugs {e.get('creator_runners') or 0}/{e.get('creator_rugs') or 0}"
     social=' · '.join(f'<a href="{html.escape(u)}">{label}</a>' for label,u in [('Website',e.get('social_website')),('X',e.get('social_x_url')),('Telegram',e.get('social_telegram_url')),('Discord',e.get('social_discord_url'))] if u) or 'Social identity belum ditemukan'
@@ -138,6 +153,13 @@ def hydrate_metadata(db, alert):
         row=db.execute('SELECT symbol,name FROM token_metadata WHERE address=? AND error IS NULL',(alert['asset'],)).fetchone()
     except sqlite3.OperationalError:
         row=None
+    if not row or not (row['symbol'] or row['name']):
+        try:
+            rpc_url=os.environ.get('MARKET_RPC_HTTP_URL') or os.environ.get('RPC_HTTP_URL') or 'https://robinhood-rpc.publicnode.com'
+            fresh=metadata(db,RPC(rpc_url,attempts=1),alert['asset'])
+            row={'symbol':fresh.get('symbol'),'name':fresh.get('name')} if fresh else None
+        except (OSError,ValueError,sqlite3.Error):
+            row=None
     if row and (row['symbol'] or row['name']):
         e['symbol']=e.get('symbol') or row['symbol'];e['name']=e.get('name') or row['name']
         alert['evidence']=json.dumps(e,separators=(',',':'))
@@ -155,7 +177,9 @@ def deliver(db, token=None, chat_id=None, limit=10):
         alert,identified=hydrate_metadata(db,raw_alert)
         created=dt.datetime.fromisoformat(alert['created_at'])
         age=(dt.datetime.now(dt.timezone.utc)-created).total_seconds()
-        if alert['rule']=='onchain-flow-breakout' and not identified and age<45:
+        if not identified:
+            if age<300:continue
+            with db:db.execute("UPDATE alert_deliveries SET status='suppressed',error='token metadata unresolved after 5 minutes' WHERE alert_id=?",(alert['id'],))
             continue
         try:
             buttons={'inline_keyboard':[[{'text':'📈 Open GMGN','url':f'https://gmgn.ai/robinhood/token/{alert["asset"]}'},{'text':'🔍 Explorer','url':f'https://robinhoodchain.blockscout.com/token/{alert["asset"]}'}]]}
@@ -177,10 +201,11 @@ def deliver_milestones(db, token=None, chat_id=None, limit=10):
         asset=html.escape(row['asset']);gmgn=f"https://gmgn.ai/robinhood/token/{row['asset']}";quote=html.escape(evidence.get('quote_symbol') or 'quote')
         try:supply=int(row['total_supply'])/(10**int(row['decimals']));first_mc=row['entry_price_quote']*supply;peak_mc=row['ath_price_quote']*supply
         except (TypeError,ValueError):first_mc=peak_mc=None
-        compact=lambda v:'—' if v is None else f'{v/1_000_000:.2f}m' if v>=1_000_000 else f'{v/1_000:.1f}k' if v>=1_000 else f'{v:.4g}'
+        fx=native_usd() if quote.upper() in ('ETH','WETH') else None;first_usd=first_mc*fx if first_mc is not None and fx else None;peak_usd=peak_mc*fx if peak_mc is not None and fx else None
+        compact=lambda v:'—' if v is None else f'${v/1_000_000:.2f}m' if v>=1_000_000 else f'${v/1_000:.1f}k' if v>=1_000 else f'${v:.2f}'
         message=(f"🏁 <b>${symbol} MILESTONE {row['multiple']}X</b>\n\n"
-                 f"First alert MC: <b>{compact(first_mc)} {quote}</b>\n"
-                 f"Peak MC: <b>{compact(peak_mc)} {quote}</b> · <b>+{row['peak_return']:.1f}%</b>\n"
+                 f"First alert MC: <b>{compact(first_usd)}</b>\n"
+                 f"Peak MC: <b>{compact(peak_usd)}</b> · <b>+{row['peak_return']:.1f}%</b>\n"
                  f"CA\n<code>{asset}</code>\n\n<a href=\"{gmgn}\">📈 Open token di GMGN</a>")
         try:
             body=parse.urlencode({'chat_id':chat_id,'text':message,'parse_mode':'HTML','disable_web_page_preview':'true'}).encode()
