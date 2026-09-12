@@ -1,7 +1,8 @@
 import json,tempfile,unittest
 from pathlib import Path
 from unittest.mock import Mock
-from creator_graph import schema,attribute_creators,ingest_transfers,rebuild_asset,TRANSFER,ZERO
+from creator_graph import schema,attribute_creators,ingest_transfers,rebuild_asset,rebuild_reputation,TRANSFER,ZERO
+from market_normalizer import schema as market_schema
 from listener import database
 from test_listener import addr,h
 
@@ -43,4 +44,14 @@ class CreatorGraphTests(unittest.TestCase):
   rebuild_asset(self.db,asset,creator)
   row=self.db.execute('SELECT classification,bundle_score,creator_linked_early_buyers,same_block_buyers FROM distribution_analysis').fetchone()
   self.assertEqual(row['classification'],'possible-bundled-launch');self.assertGreaterEqual(row['bundle_score'],55);self.assertEqual((row['creator_linked_early_buyers'],row['same_block_buyers']),(3,3))
+ def test_creator_reputation_requires_repeat_runner_evidence(self):
+  market_schema(self.db);creator=addr(8)
+  with self.db:
+   for i in range(3):
+    asset=addr(i+1);self.db.execute('INSERT INTO asset_creators VALUES(?,?,?,?,?,?,?,?,?)',(asset,'pons_v2',creator,h(i+1),10+i,'factory-event','high','x',None))
+    self.db.execute("INSERT INTO market_snapshots(asset,updated_at,symbol,source,status,liquidity_quote) VALUES(?,?,?,?,?,?)",(asset,'x','T'+str(i),'x','quote-only',100))
+    self.db.execute('INSERT INTO market_observations VALUES(?,?,?,?,?,?)',(asset,'2026-09-12T00:00:00+00:00',1,100,1,0));self.db.execute('INSERT INTO market_observations VALUES(?,?,?,?,?,?)',(asset,'2026-09-12T01:00:00+00:00',3 if i<2 else 1.2,100,1,0))
+    for j in range(5):self.db.execute('INSERT INTO events VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)',(h(100+i*10+j),j,20+j,h(20+j),addr(9),'curve','CurveBuy',asset,'x',1,json.dumps({'buyer':addr(20+j)}),'{}',None))
+  self.assertEqual(rebuild_reputation(self.db),1)
+  rep=self.db.execute('SELECT * FROM creator_reputation').fetchone();self.assertEqual(rep['classification'],'proven-runner');self.assertEqual((rep['launches'],rep['runners'],rep['rugs']),(3,2,0));self.assertEqual(rep['confidence'],'medium')
 if __name__=='__main__':unittest.main()

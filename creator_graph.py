@@ -1,5 +1,5 @@
 """Attribute Pons v2/Long creators and build a bounded ERC-20 insider supply graph."""
-import argparse, json, logging, os, sqlite3, time
+import argparse, json, logging, os, sqlite3, statistics, time
 from collections import defaultdict, deque
 from listener import RPC, RpcError, RateLimited, database, get_meta, now, set_meta
 
@@ -16,6 +16,8 @@ def schema(db):
     CREATE TABLE IF NOT EXISTS insider_edges(asset TEXT NOT NULL,source TEXT NOT NULL,target TEXT NOT NULL,depth INTEGER NOT NULL,amount_raw TEXT NOT NULL,first_block INTEGER NOT NULL,first_tx TEXT NOT NULL,PRIMARY KEY(asset,source,target));
     CREATE TABLE IF NOT EXISTS insider_wallets(asset TEXT NOT NULL,wallet TEXT NOT NULL,depth INTEGER NOT NULL,reason TEXT NOT NULL,received_raw TEXT NOT NULL,sent_raw TEXT NOT NULL,balance_raw TEXT NOT NULL,sell_count INTEGER NOT NULL,updated_at TEXT NOT NULL,PRIMARY KEY(asset,wallet));
     CREATE TABLE IF NOT EXISTS distribution_analysis(asset TEXT PRIMARY KEY,analyzed_at TEXT NOT NULL,minted_supply_raw TEXT NOT NULL,early_distributed_raw TEXT NOT NULL,creator_cluster_balance_raw TEXT NOT NULL,creator_cluster_share REAL,early_recipients INTEGER NOT NULL,early_buyers INTEGER NOT NULL,creator_linked_early_buyers INTEGER NOT NULL,same_block_buyers INTEGER NOT NULL,similar_size_buyers INTEGER NOT NULL,shared_funding_clusters INTEGER NOT NULL,bundle_score REAL NOT NULL,classification TEXT NOT NULL,evidence TEXT NOT NULL);
+    CREATE TABLE IF NOT EXISTS creator_asset_outcomes(asset TEXT PRIMARY KEY,creator TEXT NOT NULL,protocol TEXT NOT NULL,launch_block INTEGER NOT NULL,symbol TEXT,market_indexed INTEGER NOT NULL,observed_hours REAL NOT NULL,peak_multiple REAL,survived INTEGER NOT NULL,runner INTEGER NOT NULL,rug INTEGER NOT NULL,positive_alert INTEGER NOT NULL,outcome TEXT NOT NULL,updated_at TEXT NOT NULL);
+    CREATE TABLE IF NOT EXISTS creator_reputation(creator TEXT PRIMARY KEY,updated_at TEXT NOT NULL,launches INTEGER NOT NULL,indexed_assets INTEGER NOT NULL,survivors INTEGER NOT NULL,runners INTEGER NOT NULL,rugs INTEGER NOT NULL,positive_alerts INTEGER NOT NULL,runner_rate REAL,rug_rate REAL,median_peak_multiple REAL,reputation_score REAL NOT NULL,classification TEXT NOT NULL,confidence TEXT NOT NULL);
     ''')
 
 def address_topic(value):
@@ -102,11 +104,40 @@ def rebuild_asset(db,asset,creator,max_depth=2):
         db.execute('INSERT OR REPLACE INTO distribution_analysis VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',(asset,stamp,str(minted),str(early_distributed),str(cluster_balance),share,early_recipients,early_buyers,linked,same,similar,shared,score,classification,json.dumps(evidence)))
     return len(depths)
 
+def rebuild_reputation(db):
+    tables={r[0] for r in db.execute("SELECT name FROM sqlite_master WHERE type='table'")};stamp=now();outcomes=[]
+    markets={r['asset']:dict(r) for r in db.execute('SELECT * FROM market_snapshots')} if 'market_snapshots' in tables else {}
+    for c in db.execute('SELECT * FROM asset_creators WHERE creator IS NOT NULL'):
+        asset=c['asset'];market=markets.get(asset,{});obs=db.execute('SELECT MIN(observed_at) first,MAX(observed_at) last,MIN(price_quote) low,MAX(price_quote) high,MAX(liquidity_quote) high_liq FROM market_observations WHERE asset=?',(asset,)).fetchone() if 'market_observations' in tables else None
+        hours=max(0,(time.mktime(time.strptime(obs['last'][:19],'%Y-%m-%dT%H:%M:%S'))-time.mktime(time.strptime(obs['first'][:19],'%Y-%m-%dT%H:%M:%S')))/3600) if obs and obs['first'] and obs['last'] else 0
+        multiple=round(obs['high']/obs['low'],3) if obs and obs['high'] and obs['low'] else None
+        buys=db.execute("SELECT COUNT(*) FROM events WHERE asset=? AND name IN ('CurveBuy','DexBuy')",(asset,)).fetchone()[0]
+        risk=db.execute('SELECT COALESCE(SUM(sell_count),0) FROM insider_wallets WHERE asset=? AND depth<=1',(asset,)).fetchone()[0]
+        latest_liq=market.get('liquidity_usd') or market.get('liquidity_quote');rug=bool(risk or (obs and obs['high_liq'] and latest_liq is not None and latest_liq<obs['high_liq']*.2))
+        indexed=bool(market and market.get('status') not in (None,'unknown'));survived=bool(indexed and buys>=5 and not rug and hours>=.25);runner=bool(multiple is not None and multiple>=2 and not rug)
+        positive=db.execute("SELECT COUNT(*) FROM alerts WHERE asset=? AND rule NOT IN ('dev-exit','contract-risk','serial-deployer','insider-exit','possible-bundled-launch','creator-clustered-supply')",(asset,)).fetchone()[0] if 'alerts' in tables else 0
+        outcome='rug' if rug else 'runner' if runner else 'survived' if survived else 'observing'
+        outcomes.append((asset,c['creator'],c['protocol'],c['launch_block'],market.get('symbol'),int(indexed),hours,multiple,int(survived),int(runner),int(rug),int(positive>0),outcome,stamp))
+    grouped=defaultdict(list)
+    for row in outcomes:grouped[row[1]].append(row)
+    with db:
+        db.execute('DELETE FROM creator_asset_outcomes');db.execute('DELETE FROM creator_reputation');db.executemany('INSERT INTO creator_asset_outcomes VALUES('+','.join('?'*14)+')',outcomes)
+        for creator,items in grouped.items():
+            launches=len(items);indexed=sum(x[5] for x in items);survivors=sum(x[8] for x in items);runners=sum(x[9] for x in items);rugs=sum(x[10] for x in items);positive=sum(x[11] for x in items);multiples=[x[7] for x in items if x[7] is not None]
+            runner_rate=round(100*runners/indexed,1) if indexed else None;rug_rate=round(100*rugs/indexed,1) if indexed else None;median=round(statistics.median(multiples),3) if multiples else None
+            # A prior keeps one lucky launch from receiving a trusted score.
+            score=round(max(0,min(100,50+100*(runners+1)/(indexed+4)*.35+100*(survivors+1)/(indexed+4)*.2-100*(rugs+1)/(indexed+4)*.45)),1)
+            classification='toxic-history' if rugs>=2 or indexed>=3 and rug_rate>=50 else 'proven-runner' if indexed>=3 and runners>=2 and runner_rate>=35 else 'promising-history' if indexed>=2 and runners>=1 and rugs==0 else 'insufficient-history'
+            confidence='high' if indexed>=8 else 'medium' if indexed>=3 else 'low'
+            db.execute('INSERT INTO creator_reputation VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)',(creator,stamp,launches,indexed,survivors,runners,rugs,positive,runner_rate,rug_rate,median,score,classification,confidence))
+    return len(grouped)
+
 def cycle(db,rpc):
     schema(db);attributed=attribute_creators(db,rpc);logs=wallets=0
     for r in active_assets(db):
         creator=db.execute('SELECT creator FROM asset_creators WHERE asset=?',(r['asset'],)).fetchone()[0];wallets+=rebuild_asset(db,r['asset'],creator)
-    with db:set_meta(db,'creator_graph_heartbeat',now());set_meta(db,'creator_assets',db.execute('SELECT COUNT(*) FROM asset_creators WHERE creator IS NOT NULL').fetchone()[0]);set_meta(db,'insider_wallets',db.execute('SELECT COUNT(*) FROM insider_wallets').fetchone()[0])
+    reputations=rebuild_reputation(db)
+    with db:set_meta(db,'creator_graph_heartbeat',now());set_meta(db,'creator_assets',db.execute('SELECT COUNT(*) FROM asset_creators WHERE creator IS NOT NULL').fetchone()[0]);set_meta(db,'insider_wallets',db.execute('SELECT COUNT(*) FROM insider_wallets').fetchone()[0]);set_meta(db,'creator_reputations',reputations)
     return attributed,logs,wallets
 
 def main():
