@@ -74,8 +74,15 @@ def track_lifecycle(db):
         price=float(market['price_quote']);old=db.execute('SELECT * FROM alert_lifecycle WHERE alert_id=?',(alert['id'],)).fetchone()
         evidence=json.loads(alert['evidence']);wallets={w['wallet'].lower() for w in evidence.get('source_wallets',[]) if w.get('wallet')}
         created=dt.datetime.fromisoformat(alert['created_at']);started=(old['tracking_started_at'] if old else now());elapsed=max(0,(dt.datetime.now(dt.timezone.utc)-dt.datetime.fromisoformat(started)).total_seconds())
-        entry=float(old['entry_price_quote']) if old and old['entry_price_quote'] else price
-        ath=max(price,float(old['ath_price_quote'] or price)) if old else price
+        trade_points=[]
+        if market['decimals'] is not None and market['quote_decimals'] is not None:
+            for trade in db.execute("SELECT event_timestamp,decoded FROM events WHERE asset=? AND name IN ('CurveBuy','CurveSell','DexBuy','DexSell') ORDER BY block_number,log_index",(alert['asset'],)):
+                decoded=json.loads(trade['decoded']);quote_raw=int(decoded.get('quoteIn') or decoded.get('quoteOut') or 0);token_raw=int(decoded.get('tokensOut') or decoded.get('tokensIn') or 0)
+                if quote_raw and token_raw:trade_points.append((trade['event_timestamp'] or 0,(quote_raw/(10**market['quote_decimals']))/(token_raw/(10**market['decimals']))))
+        alert_epoch=int(created.timestamp());at_alert=[p for stamp,p in trade_points if stamp<=alert_epoch]
+        entry=at_alert[-1] if at_alert else (trade_points[0][1] if trade_points else (float(old['entry_price_quote']) if old and old['entry_price_quote'] else price))
+        after_alert=[p for stamp,p in trade_points if stamp>=alert_epoch]
+        ath=max([price,*after_alert,float(old['ath_price_quote'] or price) if old else price])
         checkpoints={k:(old[k] if old else None) for k in ('return_5m','return_15m','return_1h','return_6h')}
         for key,seconds in (('return_5m',300),('return_15m',900),('return_1h',3600),('return_6h',21600)):
             if checkpoints[key] is None and elapsed>=seconds:checkpoints[key]=_pct(price,entry)
@@ -87,20 +94,13 @@ def track_lifecycle(db):
                 wallet=(json.loads(row['decoded']).get('seller') or '').lower()
                 if wallet in wallets:sold.add(wallet)
         current=_pct(price,entry);maximum=_pct(ath,entry);drawdown=round((price/ath-1)*100,2) if ath else None
-        trade_prices=[]
-        if market['decimals'] is not None and market['quote_decimals'] is not None:
-            for trade in db.execute("SELECT decoded FROM events WHERE asset=? AND name IN ('CurveBuy','CurveSell','DexBuy','DexSell') ORDER BY block_number,log_index",(alert['asset'],)):
-                decoded=json.loads(trade['decoded']);quote_raw=int(decoded.get('quoteIn') or decoded.get('quoteOut') or 0);token_raw=int(decoded.get('tokensOut') or decoded.get('tokensIn') or 0)
-                if quote_raw and token_raw:trade_prices.append((quote_raw/(10**market['quote_decimals']))/(token_raw/(10**market['decimals'])))
-        discovery_entry=trade_prices[0] if trade_prices else (old['discovery_entry_price_quote'] if old and old['discovery_entry_price_quote'] else entry)
-        discovery_ath=max(trade_prices) if trade_prices else max(float(old['discovery_ath_price_quote'] or ath),ath) if old else ath
-        discovery_current=_pct(price,discovery_entry);discovery_maximum=_pct(discovery_ath,discovery_entry)
+        discovery_entry=entry;discovery_ath=ath;discovery_current=current;discovery_maximum=maximum
         values=(alert['id'],now(),started,entry,price,ath,checkpoints['return_5m'],checkpoints['return_15m'],checkpoints['return_1h'],checkpoints['return_6h'],current,maximum,drawdown,discovery_entry,discovery_ath,discovery_current,discovery_maximum,len(wallets),len(sold),buys,sells)
         columns='alert_id,updated_at,tracking_started_at,entry_price_quote,latest_price_quote,ath_price_quote,return_5m,return_15m,return_1h,return_6h,current_return,max_return,drawdown_from_ath,discovery_entry_price_quote,discovery_ath_price_quote,discovery_current_return,discovery_max_return,source_wallets,wallets_sold,post_alert_buys,post_alert_sells'
         with db:db.execute(f'INSERT OR REPLACE INTO alert_lifecycle({columns}) VALUES('+','.join('?'*21)+')',values)
         for multiple in (2,3,5,10):
-            if discovery_maximum is not None and discovery_maximum>=((multiple-1)*100):
-                with db:db.execute('INSERT OR IGNORE INTO alert_milestones(alert_id,asset,multiple,reached_at,peak_return) VALUES(?,?,?,?,?)',(alert['id'],alert['asset'],multiple,now(),discovery_maximum))
+            if maximum is not None and maximum>=((multiple-1)*100):
+                with db:db.execute('INSERT OR IGNORE INTO alert_milestones(alert_id,asset,multiple,reached_at,peak_return) VALUES(?,?,?,?,?)',(alert['id'],alert['asset'],multiple,now(),maximum))
         updated+=1
     return updated
 
@@ -168,12 +168,16 @@ def deliver(db, token=None, chat_id=None, limit=10):
 
 def deliver_milestones(db, token=None, chat_id=None, limit=10):
     if not token or not chat_id:return 0
-    rows=db.execute("SELECT m.*,a.evidence FROM alert_milestones m JOIN alerts a ON a.id=m.alert_id WHERE m.status IN ('pending','retry') ORDER BY m.id LIMIT ?",(limit,)).fetchall();sent=0
+    rows=db.execute("SELECT m.*,a.evidence,l.entry_price_quote,l.ath_price_quote,t.total_supply,t.decimals FROM alert_milestones m JOIN alerts a ON a.id=m.alert_id LEFT JOIN alert_lifecycle l ON l.alert_id=m.alert_id LEFT JOIN token_metadata t ON t.address=m.asset WHERE m.status IN ('pending','retry') ORDER BY m.id LIMIT ?",(limit,)).fetchall();sent=0
     for row in rows:
         evidence=json.loads(row['evidence']);symbol=html.escape(evidence.get('symbol') or f"NEW-{row['asset'][2:8].upper()}")
-        asset=html.escape(row['asset']);gmgn=f"https://gmgn.ai/robinhood/token/{row['asset']}"
+        asset=html.escape(row['asset']);gmgn=f"https://gmgn.ai/robinhood/token/{row['asset']}";quote=html.escape(evidence.get('quote_symbol') or 'quote')
+        try:supply=int(row['total_supply'])/(10**int(row['decimals']));first_mc=row['entry_price_quote']*supply;peak_mc=row['ath_price_quote']*supply
+        except (TypeError,ValueError):first_mc=peak_mc=None
+        compact=lambda v:'—' if v is None else f'{v/1_000_000:.2f}m' if v>=1_000_000 else f'{v/1_000:.1f}k' if v>=1_000 else f'{v:.4g}'
         message=(f"🏁 <b>${symbol} MILESTONE {row['multiple']}X</b>\n\n"
-                 f"Peak sejak discovery onchain: <b>+{row['peak_return']:.1f}%</b>\n"
+                 f"First alert MC: <b>{compact(first_mc)} {quote}</b>\n"
+                 f"Peak MC: <b>{compact(peak_mc)} {quote}</b> · <b>+{row['peak_return']:.1f}%</b>\n"
                  f"CA\n<code>{asset}</code>\n\n<a href=\"{gmgn}\">📈 Open token di GMGN</a>")
         try:
             body=parse.urlencode({'chat_id':chat_id,'text':message,'parse_mode':'HTML','disable_web_page_preview':'true'}).encode()
