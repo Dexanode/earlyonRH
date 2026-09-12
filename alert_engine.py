@@ -82,6 +82,17 @@ def schema(db):
         with db:
             db.execute("UPDATE alert_milestones SET status='legacy-unverified',error='insufficient confirmation samples' WHERE confirmed_samples<3 OR confirmation_span_seconds<30")
             set_meta(db,'milestone_confirmation_v3','1')
+    live_since=db.execute("SELECT value FROM meta WHERE key='milestone_live_since_v4'").fetchone()
+    if not live_since:
+        activated=now()
+        last_alert_id=db.execute('SELECT COALESCE(MAX(id),0) FROM alerts').fetchone()[0]
+        with db:
+            # A code deploy must never turn historical observations into fresh
+            # Telegram notifications. Only alerts created after activation can
+            # produce milestones under this version.
+            db.execute("UPDATE alert_milestones SET status='legacy-unverified',error='predates live milestone activation' WHERE status IN ('pending','retry')")
+            set_meta(db,'milestone_live_since_v4',activated)
+            set_meta(db,'milestone_min_alert_id_v4',last_alert_id)
 
 
 def _pct(price, entry):
@@ -95,6 +106,8 @@ def track_lifecycle(db):
     cutoff=(dt.datetime.now(dt.timezone.utc)-dt.timedelta(hours=7)).isoformat()
     # Six hours is the final lifecycle checkpoint. Older alerts are immutable
     # calibration history and must not delay evaluation of fresh flow.
+    min_alert_row=db.execute("SELECT value FROM meta WHERE key='milestone_min_alert_id_v4'").fetchone()
+    milestone_min_alert_id=int(min_alert_row[0]) if min_alert_row else 0
     alerts=db.execute('SELECT id,created_at,asset,evidence FROM alerts WHERE created_at>=?',(cutoff,)).fetchall();updated=0
     for alert in alerts:
         market=db.execute('SELECT price_quote,decimals,quote_decimals FROM market_snapshots WHERE asset=?',(alert['asset'],)).fetchone()
@@ -134,6 +147,10 @@ def track_lifecycle(db):
         values=(alert['id'],now(),started,entry,price,ath,checkpoints['return_5m'],checkpoints['return_15m'],checkpoints['return_1h'],checkpoints['return_6h'],current,maximum,drawdown,discovery_entry,discovery_ath,discovery_current,discovery_maximum,len(wallets),len(sold),buys,sells)
         columns='alert_id,updated_at,tracking_started_at,entry_price_quote,latest_price_quote,ath_price_quote,return_5m,return_15m,return_1h,return_6h,current_return,max_return,drawdown_from_ath,discovery_entry_price_quote,discovery_ath_price_quote,discovery_current_return,discovery_max_return,source_wallets,wallets_sold,post_alert_buys,post_alert_sells'
         with db:db.execute(f'INSERT OR REPLACE INTO alert_lifecycle({columns}) VALUES('+','.join('?'*21)+')',values)
+        # Existing alerts remain useful calibration history, but cannot create
+        # retroactive notifications after a deploy or migration.
+        if alert['id'] <= milestone_min_alert_id:
+            continue
         for multiple in (2,3,5,10):
             qualifying=[stamp for stamp,value in observations if value>=entry*multiple]
             if len(qualifying)>=3:
@@ -227,13 +244,24 @@ def deliver(db, token=None, chat_id=None, limit=10):
 
 def deliver_milestones(db, token=None, chat_id=None, limit=10):
     if not token or not chat_id:return 0
-    rows=db.execute("SELECT m.*,a.evidence,l.entry_price_quote,l.ath_price_quote,t.total_supply,t.decimals FROM alert_milestones m JOIN alerts a ON a.id=m.alert_id LEFT JOIN alert_lifecycle l ON l.alert_id=m.alert_id LEFT JOIN token_metadata t ON t.address=m.asset WHERE m.status IN ('pending','retry') ORDER BY m.id LIMIT ?",(limit,)).fetchall();sent=0
+    fresh_cutoff=(dt.datetime.now(dt.timezone.utc)-dt.timedelta(minutes=10)).isoformat()
+    with db:
+        db.execute("UPDATE alert_milestones SET status='stale',error='milestone notification window expired' WHERE status IN ('pending','retry') AND reached_at<?",(fresh_cutoff,))
+    rows=db.execute("SELECT m.*,a.evidence,l.entry_price_quote,l.ath_price_quote,t.total_supply,t.decimals,t.symbol AS metadata_symbol,t.name AS metadata_name,s.symbol AS snapshot_symbol,s.quote_symbol AS snapshot_quote_symbol FROM alert_milestones m JOIN alerts a ON a.id=m.alert_id LEFT JOIN alert_lifecycle l ON l.alert_id=m.alert_id LEFT JOIN token_metadata t ON t.address=m.asset LEFT JOIN market_snapshots s ON s.asset=m.asset WHERE m.status IN ('pending','retry') AND m.reached_at>=? ORDER BY m.id LIMIT ?",(fresh_cutoff,max(limit,100))).fetchall();sent=0
     for row in rows:
-        evidence=json.loads(row['evidence']);symbol=html.escape(evidence.get('symbol') or f"NEW-{row['asset'][2:8].upper()}")
-        asset=html.escape(row['asset']);gmgn=f"https://gmgn.ai/robinhood/token/{row['asset']}";quote=html.escape(evidence.get('quote_symbol') or 'quote')
-        try:supply=int(row['total_supply'])/(10**int(row['decimals']));first_mc=row['entry_price_quote']*supply;peak_mc=row['ath_price_quote']*supply
-        except (TypeError,ValueError):first_mc=peak_mc=None
-        fx=native_usd() if quote.upper() in ('ETH','WETH') else None;first_usd=first_mc*fx if first_mc is not None and fx else None;peak_usd=peak_mc*fx if peak_mc is not None and fx else None
+        evidence=json.loads(row['evidence']);raw_symbol=evidence.get('symbol') or row['metadata_symbol'] or row['snapshot_symbol'];symbol=html.escape(raw_symbol or '')
+        asset=html.escape(row['asset']);gmgn=f"https://gmgn.ai/robinhood/token/{row['asset']}";quote=html.escape(evidence.get('quote_symbol') or row['snapshot_quote_symbol'] or 'quote')
+        try:supply=int(row['total_supply'])/(10**int(row['decimals']));first_mc=row['entry_price_quote']*supply
+        except (TypeError,ValueError):first_mc=None
+        fx=native_usd() if quote.upper() in ('ETH','WETH') else None
+        first_usd=evidence.get('market_cap_usd')
+        if first_usd is None and evidence.get('market_cap_quote') is not None and fx:first_usd=float(evidence['market_cap_quote'])*fx
+        if first_usd is None and first_mc is not None and fx:first_usd=first_mc*fx
+        peak_usd=first_usd*(1+float(row['peak_return'])/100) if first_usd is not None else None
+        # A milestone without identity and alert-time valuation is not
+        # actionable. Keep it pending briefly so reconciliation can fill both.
+        if not symbol or first_usd is None or first_usd<=0:
+            continue
         compact=lambda v:'—' if v is None else f'${v/1_000_000:.2f}m' if v>=1_000_000 else f'${v/1_000:.1f}k' if v>=1_000 else f'${v:.2f}'
         message=(f"🏁 <b>${symbol} MILESTONE {row['multiple']}X</b>\n\n"
                  f"First alert MC: <b>{compact(first_usd)}</b>\n"
