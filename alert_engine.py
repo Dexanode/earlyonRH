@@ -13,6 +13,7 @@ from dashboard import read
 from listener import database, now, set_meta
 
 LOG = logging.getLogger('alerts')
+RISK_ONLY_RULES={'dev-exit','contract-risk','serial-deployer'}
 
 
 def schema(db):
@@ -101,7 +102,7 @@ def telegram_text(alert):
 
 def deliver(db, token=None, chat_id=None, limit=10):
     if not token or not chat_id:return 0
-    rows=db.execute("SELECT a.* FROM alert_deliveries d JOIN alerts a ON a.id=d.alert_id WHERE d.status!='sent' AND d.attempts<5 ORDER BY a.id LIMIT ?",(limit,)).fetchall();sent=0
+    rows=db.execute("SELECT a.* FROM alert_deliveries d JOIN alerts a ON a.id=d.alert_id WHERE d.status IN ('pending','retry') AND d.attempts<5 ORDER BY a.id LIMIT ?",(limit,)).fetchall();sent=0
     for alert in rows:
         try:
             buttons={'inline_keyboard':[[{'text':'📈 Open GMGN','url':f'https://gmgn.ai/robinhood/token/{alert["asset"]}'},{'text':'🔍 Explorer','url':f'https://robinhoodchain.blockscout.com/token/{alert["asset"]}'}]]}
@@ -228,6 +229,25 @@ def evaluate(db, candidates, cooldown=1800, improvement=8):
     return emitted
 
 
+def telegram_worthy(db, alert_id):
+    """Risk events notify only when they change a previously alerted thesis."""
+    alert=db.execute('SELECT asset,rule FROM alerts WHERE id=?',(alert_id,)).fetchone()
+    if not alert:return False
+    if alert['rule'] not in RISK_ONLY_RULES:return True
+    return bool(db.execute("SELECT 1 FROM alerts WHERE asset=? AND id<? AND rule NOT IN ('dev-exit','contract-risk','serial-deployer') LIMIT 1",(alert['asset'],alert_id)).fetchone())
+
+
+def suppress_untracked_risk_deliveries(db):
+    rows=db.execute("SELECT d.alert_id FROM alert_deliveries d JOIN alerts a ON a.id=d.alert_id WHERE d.status!='sent' AND a.rule IN ('dev-exit','contract-risk','serial-deployer')").fetchall()
+    suppressed=0
+    with db:
+        for row in rows:
+            if not telegram_worthy(db,row['alert_id']):
+                db.execute("UPDATE alert_deliveries SET status='suppressed',error='risk event for asset without prior positive alert' WHERE alert_id=?",(row['alert_id'],))
+                suppressed+=1
+    return suppressed
+
+
 def cycle(path, cooldown=1800, improvement=8):
     snapshot=read(path)
     db=database(path);schema(db)
@@ -236,7 +256,10 @@ def cycle(path, cooldown=1800, improvement=8):
         if snapshot['health'].get('state')!='healthy': return []
         emitted=evaluate(db,snapshot['candidates'],cooldown,improvement)
         with db:
-            for alert_id in emitted:db.execute("INSERT OR IGNORE INTO alert_deliveries(alert_id,channel,status) VALUES(?,'telegram','pending')",(alert_id,))
+            for alert_id in emitted:
+                status='pending' if telegram_worthy(db,alert_id) else 'suppressed'
+                db.execute("INSERT OR IGNORE INTO alert_deliveries(alert_id,channel,status,error) VALUES(?,'telegram',?,?)",(alert_id,status,None if status=='pending' else 'risk event for asset without prior positive alert'))
+        suppress_untracked_risk_deliveries(db)
         delivered=deliver(db,os.environ.get('TELEGRAM_BOT_TOKEN'),os.environ.get('TELEGRAM_CHAT_ID'))
         if emitted:tracked=track_lifecycle(db)
         with db:

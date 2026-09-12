@@ -3,7 +3,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from alert_engine import evaluate, matches, schema, source_wallets, track_lifecycle, telegram_text
+from alert_engine import evaluate, matches, schema, source_wallets, track_lifecycle, telegram_text, telegram_worthy, suppress_untracked_risk_deliveries
 from listener import database
 from wallet_profiler import schema as wallet_schema
 
@@ -46,6 +46,19 @@ class AlertTests(unittest.TestCase):
     def test_serial_deployer_is_exposed_as_risk_evidence(self):
         rules={r[0] for r in matches(candidate(deployer_launch_count=4))}
         self.assertEqual(rules,{'serial-deployer'})
+
+    def test_untracked_dev_exit_is_silent_but_followup_exit_notifies(self):
+        asset=candidate()['id']
+        lone=evaluate(self.db,[candidate(dev_exit_detected=True)])[0]
+        self.assertFalse(telegram_worthy(self.db,lone))
+        other='0x'+'2'*40
+        positive=evaluate(self.db,[candidate(id=other)])[0]
+        exit_id=evaluate(self.db,[candidate(id=other,dev_exit_detected=True)])[0]
+        self.assertTrue(telegram_worthy(self.db,positive))
+        self.assertTrue(telegram_worthy(self.db,exit_id))
+        with self.db:self.db.execute("INSERT INTO alert_deliveries(alert_id,channel,status) VALUES(?,'telegram','pending')",(lone,))
+        self.assertEqual(suppress_untracked_risk_deliveries(self.db),1)
+        self.assertEqual(self.db.execute('SELECT status FROM alert_deliveries WHERE alert_id=?',(lone,)).fetchone()[0],'suppressed')
     def test_critical_contract_risk(self):
         result=matches(candidate(safety_status='higher-risk',safety_score=10))
         self.assertEqual(result[0][:2],('contract-risk','critical'))
