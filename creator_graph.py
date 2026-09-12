@@ -41,10 +41,9 @@ def attribute_creators(db,rpc,limit=20):
     return count
 
 def active_assets(db,limit=12):
-    head=int(get_meta(db,'head') or 0)
     return db.execute("""SELECT c.asset,c.launch_block FROM asset_creators c LEFT JOIN events e ON e.asset=c.asset
-      WHERE c.creator IS NOT NULL AND c.error IS NULL AND (e.block_number>? OR c.launch_block>?)
-      GROUP BY c.asset ORDER BY SUM(e.name IN ('CurveBuy','DexBuy')) DESC,c.launch_block DESC LIMIT ?""",(head-5000,head-5000,limit)).fetchall()
+      WHERE c.creator IS NOT NULL AND c.error IS NULL
+      GROUP BY c.asset ORDER BY SUM(e.name IN ('CurveBuy','DexBuy')) DESC,c.launch_block DESC LIMIT ?""",(limit,)).fetchall()
 
 def ingest_transfers(db,rpc,asset,launch,head,chunk=500):
     row=db.execute('SELECT next_block FROM supply_graph_cursors WHERE asset=?',(asset,)).fetchone();start=row[0] if row else launch
