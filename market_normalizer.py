@@ -145,6 +145,10 @@ def normalize_asset(db,rpc,asset):
 def cycle(db,rpc,limit=25):
     head=int(dict(db.execute('SELECT key,value FROM meta')).get('head',0))
     assets=[r[0] for r in db.execute("SELECT asset FROM events WHERE name IN ('CurveBuy','CurveSell') AND block_number>? GROUP BY asset ORDER BY COUNT(*) DESC LIMIT ?",(head-10000,limit))]
+    tables={r[0] for r in db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+    if 'alerts' in tables:
+        tracked=[r[0] for r in db.execute("SELECT DISTINCT asset FROM alerts WHERE rule NOT IN ('dev-exit','contract-risk','serial-deployer') ORDER BY id DESC LIMIT ?",(limit,))]
+        assets=list(dict.fromkeys(assets+tracked))[:limit*2]
     ok=0
     for asset in assets:
         try:ok+=normalize_asset(db,rpc,asset)
