@@ -171,6 +171,13 @@ def read(dbpath, asset=None, offset=0):
             sql=f"SELECT m.target_asset,COUNT(DISTINCT m.wallet) migrating_wallets,COUNT(DISTINCT m.source_asset) migration_sources,MIN(m.latency_seconds) fastest_migration_seconds,{qualified} qualified_migrating_wallets_5m FROM capital_migrations m {join} GROUP BY m.target_asset"
             migration_signal={r['target_asset']:dict(r) for r in db.execute(sql)}
         markets={r['asset']:dict(r) for r in db.execute('SELECT * FROM market_snapshots')} if 'market_snapshots' in tables else {}
+        market_history={}
+        if 'market_observations' in tables:
+            for row in db.execute("""SELECT asset,COUNT(*) observations,
+                (strftime('%s',MAX(observed_at))-strftime('%s',MIN(observed_at))) observation_span_seconds,
+                MAX(price_quote) observed_high_quote
+                FROM market_observations WHERE strftime('%s',observed_at)>=strftime('%s','now','-30 minutes') GROUP BY asset"""):
+                market_history[row['asset']]=dict(row)
         for c in candidates.values():
             c['unique_buyers']=len(c['buyers'])
             c['repeat_buyers']=sum(v>1 for v in c['buyers'].values())
@@ -196,6 +203,11 @@ def read(dbpath, asset=None, offset=0):
             market=markets.get(c['id'],{})
             for key in ('symbol','name','quote_symbol','quote_decimals','price_quote','price_usd','market_cap_quote','market_cap_usd','liquidity_quote','liquidity_usd','volume_5m_quote','volume_1h_quote','volume_24h_quote','change_5m','change_1h','change_6h','change_24h','source','status'):
                 c['market_'+key if key in ('source','status') else key]=market.get(key)
+            history=market_history.get(c['id'],{})
+            c['market_observations']=history.get('observations',0)
+            c['observation_span_seconds']=history.get('observation_span_seconds',0) or 0
+            high=history.get('observed_high_quote')
+            c['drawdown_from_observed_high']=round((c['price_quote']/high-1)*100,2) if c.get('price_quote') and high else None
             c['safety_score']=analysis['safety_score'] if analysis else None
             c['safety_status']=analysis['safety_status'] if analysis else 'unknown'
             c['safety_findings']=json.loads(analysis['findings']) if analysis else []

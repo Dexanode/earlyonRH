@@ -9,7 +9,7 @@ from wallet_profiler import schema as wallet_schema
 
 
 def candidate(**overrides):
-    c=dict(id='0x'+'1'*40,protocol='pons_v2',symbol='TEST',name='Test Token',market_status='quote-only',deployer='0x'+'d'*40,activity_score=72,conviction_score=74,safety_score=65,safety_status='screened',safety_findings=[],buys=12,sells=3,buys_5m=3,sells_5m=0,last_trade_age_seconds=30,dev_exit_detected=False,unique_buyers=6,repeat_buyers=2,unique_senders=4,routed_share=.25,activity_acceleration=2,age_blocks=500,buy_sell_ratio=4)
+    c=dict(id='0x'+'1'*40,protocol='pons_v2',symbol='TEST',name='Test Token',market_status='quote-only',deployer='0x'+'d'*40,activity_score=72,conviction_score=74,safety_score=65,safety_status='screened',safety_findings=[],buys=12,sells=3,buys_5m=3,sells_5m=0,last_trade_age_seconds=30,dev_exit_detected=False,unique_buyers=6,repeat_buyers=2,unique_senders=4,routed_share=.25,activity_acceleration=2,age_blocks=500,buy_sell_ratio=4,market_observations=2,observation_span_seconds=240,drawdown_from_observed_high=-5,change_5m=8)
     c.update(overrides);return c
 
 
@@ -34,6 +34,14 @@ class AlertTests(unittest.TestCase):
         self.assertEqual(matches(candidate(deployer=None)),[])
         self.assertTrue(matches(candidate(age_blocks=12000)))
         self.assertEqual(matches(candidate(age_blocks=15001)),[])
+
+    def test_positive_alpha_waits_for_survival_and_rejects_active_dump(self):
+        self.assertEqual(matches(candidate(market_observations=1)),[])
+        self.assertEqual(matches(candidate(observation_span_seconds=120)),[])
+        self.assertEqual(matches(candidate(change_5m=-20.01)),[])
+        self.assertEqual(matches(candidate(drawdown_from_observed_high=-35.01)),[])
+        self.assertEqual(matches(candidate(buys_5m=3,sells_5m=4)),[])
+        self.assertEqual(matches(candidate(buy_sell_ratio=1.18)),[])
 
     def test_serial_deployer_is_exposed_as_risk_evidence(self):
         rules={r[0] for r in matches(candidate(deployer_launch_count=4))}

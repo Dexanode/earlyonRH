@@ -27,6 +27,12 @@ def schema(db):
       CREATE TABLE IF NOT EXISTS token_metadata(
         address TEXT PRIMARY KEY, checked_at TEXT NOT NULL, symbol TEXT, name TEXT,
         decimals INTEGER, total_supply TEXT, error TEXT);
+      CREATE TABLE IF NOT EXISTS market_observations(
+        asset TEXT NOT NULL, observed_at TEXT NOT NULL, price_quote REAL,
+        liquidity_quote REAL, volume_5m_quote REAL, change_5m REAL,
+        PRIMARY KEY(asset,observed_at));
+      CREATE INDEX IF NOT EXISTS market_observations_asset_time
+        ON market_observations(asset,observed_at DESC);
     ''')
 
 
@@ -98,8 +104,13 @@ def normalize_asset(db,rpc,asset):
     liquidity=reserve_raw/(10**quote_meta['decimals']) if reserve_raw is not None else None
     supply=int(token['total_supply'])/(10**token['decimals']) if token.get('total_supply') else None
     mc=metrics['price_quote']*supply if supply is not None else None
-    values=(asset,now(),token['symbol'],token['name'],token['decimals'],quote,quote_meta['symbol'],quote_meta['decimals'],metrics['price_quote'],None,mc,None,liquidity,None,metrics['volume_5m_quote'],metrics['volume_1h_quote'],metrics['volume_24h_quote'],metrics['change_5m'],metrics['change_1h'],metrics['change_6h'],metrics['change_24h'],'onchain-curve-events+erc20-balance','quote-only',None)
-    with db:db.execute('INSERT OR REPLACE INTO market_snapshots VALUES('+','.join('?'*24)+')',values)
+    stamp=now()
+    source='onchain-curve-events+native-balance' if quote.lower()==ZERO else 'onchain-curve-events+erc20-balance'
+    values=(asset,stamp,token['symbol'],token['name'],token['decimals'],quote,quote_meta['symbol'],quote_meta['decimals'],metrics['price_quote'],None,mc,None,liquidity,None,metrics['volume_5m_quote'],metrics['volume_1h_quote'],metrics['volume_24h_quote'],metrics['change_5m'],metrics['change_1h'],metrics['change_6h'],metrics['change_24h'],source,'quote-only',None)
+    with db:
+        db.execute('INSERT OR REPLACE INTO market_snapshots VALUES('+','.join('?'*24)+')',values)
+        db.execute('INSERT OR REPLACE INTO market_observations VALUES(?,?,?,?,?,?)',(asset,stamp,metrics['price_quote'],liquidity,metrics['volume_5m_quote'],metrics['change_5m']))
+        db.execute("DELETE FROM market_observations WHERE strftime('%s',observed_at)<strftime('%s','now','-2 days')")
     return True
 
 
