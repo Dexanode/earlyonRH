@@ -15,6 +15,7 @@ def schema(db):
     CREATE TABLE IF NOT EXISTS supply_graph_cursors(asset TEXT PRIMARY KEY,next_block INTEGER NOT NULL);
     CREATE TABLE IF NOT EXISTS insider_edges(asset TEXT NOT NULL,source TEXT NOT NULL,target TEXT NOT NULL,depth INTEGER NOT NULL,amount_raw TEXT NOT NULL,first_block INTEGER NOT NULL,first_tx TEXT NOT NULL,PRIMARY KEY(asset,source,target));
     CREATE TABLE IF NOT EXISTS insider_wallets(asset TEXT NOT NULL,wallet TEXT NOT NULL,depth INTEGER NOT NULL,reason TEXT NOT NULL,received_raw TEXT NOT NULL,sent_raw TEXT NOT NULL,balance_raw TEXT NOT NULL,sell_count INTEGER NOT NULL,updated_at TEXT NOT NULL,PRIMARY KEY(asset,wallet));
+    CREATE TABLE IF NOT EXISTS distribution_analysis(asset TEXT PRIMARY KEY,analyzed_at TEXT NOT NULL,minted_supply_raw TEXT NOT NULL,early_distributed_raw TEXT NOT NULL,creator_cluster_balance_raw TEXT NOT NULL,creator_cluster_share REAL,early_recipients INTEGER NOT NULL,early_buyers INTEGER NOT NULL,creator_linked_early_buyers INTEGER NOT NULL,same_block_buyers INTEGER NOT NULL,similar_size_buyers INTEGER NOT NULL,shared_funding_clusters INTEGER NOT NULL,bundle_score REAL NOT NULL,classification TEXT NOT NULL,evidence TEXT NOT NULL);
     ''')
 
 def address_topic(value):
@@ -83,6 +84,23 @@ def rebuild_asset(db,asset,creator,max_depth=2):
         db.execute('DELETE FROM insider_edges WHERE asset=?',(asset,));db.execute('DELETE FROM insider_wallets WHERE asset=?',(asset,))
         for (source,target),e in edges.items():db.execute('INSERT INTO insider_edges VALUES(?,?,?,?,?,?,?)',(asset,source,target,e['depth'],str(e['amount']),e['block'],e['tx']))
         for wallet,depth in depths.items():db.execute('INSERT INTO insider_wallets VALUES(?,?,?,?,?,?,?,?,?)',(asset,wallet,depth,'creator' if depth==0 else f'creator-transfer-depth-{depth}',str(received[wallet]),str(sent[wallet]),str(max(0,received[wallet]-sent[wallet])),sellers[wallet],stamp))
+        launch=db.execute('SELECT launch_block FROM asset_creators WHERE asset=?',(asset,)).fetchone();launch=launch[0] if launch else 0
+        minted=sum(int(r['amount_raw']) for r in rows if r['from_wallet']==ZERO)
+        early=[r for r in rows if r['block_number']<=launch+10 and r['from_wallet']!=ZERO]
+        early_distributed=sum(int(r['amount_raw']) for r in early);early_recipients=len({r['to_wallet'] for r in early})
+        cluster_balance=sum(max(0,received[w]-sent[w]) for w in depths);share=round(100*cluster_balance/minted,3) if minted else None
+        attrs={r['tx_hash']:r['sender'] for r in db.execute('SELECT tx_hash,sender FROM tx_attributions WHERE asset=? AND error IS NULL',(asset,))} if db.execute("SELECT 1 FROM sqlite_master WHERE name='tx_attributions'").fetchone() else {}
+        buys=[]
+        for r in db.execute("SELECT tx_hash,block_number,name,decoded FROM events WHERE asset=? AND name IN ('CurveBuy','DexBuy') AND block_number<=?",(asset,launch+10)):
+            v=json.loads(r['decoded']);wallet=(attrs.get(r['tx_hash']) if r['name']=='DexBuy' else None) or v.get('buyer');size=int(v.get('quoteIn') or 0)
+            if wallet:buys.append((wallet.lower(),r['block_number'],size))
+        early_buyers=len({x[0] for x in buys});linked=len({x[0] for x in buys if x[0] in depths});same=max((len({w for w,b,_ in buys if b==block}) for block in {x[1] for x in buys}),default=0)
+        sizes=[x[2] for x in buys if x[2]>0];similar=max((sum(abs(x-size)<=max(1,size//20) for x in sizes) for size in sizes),default=0)
+        shared=db.execute("SELECT COUNT(*) FROM capital_clusters WHERE asset=? AND confidence='observed-shared-sender' AND members>=2",(asset,)).fetchone()[0] if db.execute("SELECT 1 FROM sqlite_master WHERE name='capital_clusters'").fetchone() else 0
+        score=min(100,linked*18+max(0,same-1)*8+max(0,similar-1)*6+shared*12+(25 if share is not None and share>=20 else 10 if share is not None and share>=10 else 0))
+        classification='possible-bundled-launch' if score>=55 else 'creator-clustered-supply' if share is not None and share>=15 else 'clean-early-distribution' if early_buyers>=3 and linked==0 and (share is None or share<10) else 'insufficient-evidence'
+        evidence={'window_blocks':10,'creator_depth':max_depth,'buyer_identity':'tx.from for V4; event actor for curve','historical_coverage':'websocket-observed'}
+        db.execute('INSERT OR REPLACE INTO distribution_analysis VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',(asset,stamp,str(minted),str(early_distributed),str(cluster_balance),share,early_recipients,early_buyers,linked,same,similar,shared,score,classification,json.dumps(evidence)))
     return len(depths)
 
 def cycle(db,rpc):

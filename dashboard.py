@@ -117,6 +117,7 @@ def read(dbpath, asset=None, offset=0):
         launch_deployers={r['target']:r['source'].lower() for r in db.execute("SELECT source,target FROM topology_edges WHERE relation='deployed'")} if 'topology_edges' in tables else {}
         creators={r['asset']:dict(r) for r in db.execute('SELECT * FROM asset_creators')} if 'asset_creators' in tables else {}
         insider_signal={r['asset']:dict(r) for r in db.execute('SELECT asset,COUNT(*) insider_wallets,SUM(sell_count) insider_sells,SUM(CASE WHEN depth<=1 AND sell_count>0 THEN 1 ELSE 0 END) insider_sellers FROM insider_wallets GROUP BY asset')} if 'insider_wallets' in tables else {}
+        distributions={r['asset']:dict(r) for r in db.execute('SELECT * FROM distribution_analysis')} if 'distribution_analysis' in tables else {}
         deployer_launch_counts=Counter(launch_deployers.values())
         deployer_assets=defaultdict(list)
         for token,deployer in launch_deployers.items():deployer_assets[deployer].append(token)
@@ -217,6 +218,9 @@ def read(dbpath, asset=None, offset=0):
             creator=creators.get(c['id'],{});c['deployer']=(creator.get('creator') or (analysis['deployer'] if analysis and analysis['deployer'] else launch_deployers.get(c['id'])))
             c['creator_attribution']=creator.get('attribution');c['creator_confidence']=creator.get('confidence')
             ins=insider_signal.get(c['id'],{});c['insider_wallets']=ins.get('insider_wallets',0) or 0;c['insider_sell_count']=ins.get('insider_sells',0) or 0;c['insider_exit_detected']=(ins.get('insider_sellers',0) or 0)>0
+            dist=distributions.get(c['id'],{})
+            for key in ('creator_cluster_share','early_recipients','early_buyers','creator_linked_early_buyers','same_block_buyers','similar_size_buyers','shared_funding_clusters','bundle_score','classification'):
+                c['distribution_'+key if key=='classification' else key]=dist.get(key)
             deployer=(c['deployer'] or '').lower()
             c['deployer_launch_count']=deployer_launch_counts.get(deployer,0)
             c['deployer_other_assets']=[a for a in deployer_assets.get(deployer,()) if a!=c['id']][:10]

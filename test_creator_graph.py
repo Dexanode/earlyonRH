@@ -32,4 +32,15 @@ class CreatorGraphTests(unittest.TestCase):
   rpc=Mock();rpc.call.return_value=[log]
   self.assertEqual(ingest_transfers(self.db,rpc,asset,10,999,500),1)
   self.assertEqual(self.db.execute('SELECT next_block FROM supply_graph_cursors').fetchone()[0],510)
+ def test_bundle_detector_combines_linked_same_block_buyers(self):
+  asset,creator=addr(1),addr(8)
+  with self.db:
+   self.db.execute('INSERT INTO asset_creators VALUES(?,?,?,?,?,?,?,?,?)',(asset,'pons_v2',creator,h(1),10,'factory-event','high','x',None))
+   self.db.execute('INSERT INTO token_transfers VALUES(?,?,?,?,?,?,?)',(asset,h(10),0,10,ZERO,creator,'1000'))
+   for i,wallet in enumerate((addr(4),addr(5),addr(6)),1):
+    self.db.execute('INSERT INTO token_transfers VALUES(?,?,?,?,?,?,?)',(asset,h(10+i),0,10,creator,wallet,'200'))
+    self.db.execute('INSERT INTO events VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)',(h(20+i),0,11,h(11),addr(3),'curve','CurveBuy',asset,'x',1,json.dumps({'buyer':wallet,'quoteIn':'100','tokensOut':'10'}),'{}',None))
+  rebuild_asset(self.db,asset,creator)
+  row=self.db.execute('SELECT classification,bundle_score,creator_linked_early_buyers,same_block_buyers FROM distribution_analysis').fetchone()
+  self.assertEqual(row['classification'],'possible-bundled-launch');self.assertGreaterEqual(row['bundle_score'],55);self.assertEqual((row['creator_linked_early_buyers'],row['same_block_buyers']),(3,3))
 if __name__=='__main__':unittest.main()
