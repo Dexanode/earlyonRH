@@ -86,11 +86,9 @@ def rebuild_asset(db,asset,creator,max_depth=2):
     return len(depths)
 
 def cycle(db,rpc):
-    schema(db);attributed=attribute_creators(db,rpc);head=int(get_meta(db,'head') or 0);logs=wallets=0
+    schema(db);attributed=attribute_creators(db,rpc);logs=wallets=0
     for r in active_assets(db):
-        try:logs+=ingest_transfers(db,rpc,r['asset'],r['launch_block'],head);creator=db.execute('SELECT creator FROM asset_creators WHERE asset=?',(r['asset'],)).fetchone()[0];wallets+=rebuild_asset(db,r['asset'],creator)
-        except RateLimited:break
-        except RpcError as exc:LOG.warning('graph delayed asset=%s error=%s',r['asset'],exc)
+        creator=db.execute('SELECT creator FROM asset_creators WHERE asset=?',(r['asset'],)).fetchone()[0];wallets+=rebuild_asset(db,r['asset'],creator)
     with db:set_meta(db,'creator_graph_heartbeat',now());set_meta(db,'creator_assets',db.execute('SELECT COUNT(*) FROM asset_creators WHERE creator IS NOT NULL').fetchone()[0]);set_meta(db,'insider_wallets',db.execute('SELECT COUNT(*) FROM insider_wallets').fetchone()[0])
     return attributed,logs,wallets
 

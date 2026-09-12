@@ -17,6 +17,7 @@ LOG = logging.getLogger('stream')
 FACTORIES = {a: k for a, k in REGISTRY.items() if k.startswith('pons_') or k=='long'}
 TOPICS = list(dict.fromkeys(s['topic'] for k in ('pons_v1', 'pons_v2', 'long', 'curve', 'v3_pool', 'v4', 'v2_factory', 'v3_factory', 'erc6551_registry') for s in SPECS[k]))
 GENERIC_BIRTH_TOPICS = {s['topic']: kind for kind in ('pons_v1','pons_v2','v2_factory','v3_factory','erc6551_registry') for s in SPECS[kind] if s['name'] in ('TokenLaunched','PairCreated','PoolCreated','ERC6551AccountCreated')}
+TRANSFER='0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef'
 MAX_AUTO_RECOVERY = 100
 
 
@@ -29,6 +30,7 @@ class StreamStore:
         self.last_message = 0
         db.execute('CREATE TABLE IF NOT EXISTS stream_pending(tx TEXT,idx INTEGER,block INTEGER,body TEXT,PRIMARY KEY(tx,idx))')
         db.execute('CREATE TABLE IF NOT EXISTS v4_asset_pools(pool_id TEXT PRIMARY KEY,asset TEXT NOT NULL,quote TEXT,currency0 TEXT,currency1 TEXT,created_block INTEGER NOT NULL)')
+        db.execute('CREATE TABLE IF NOT EXISTS token_transfers(asset TEXT NOT NULL,tx_hash TEXT NOT NULL,log_index INTEGER NOT NULL,block_number INTEGER NOT NULL,from_wallet TEXT NOT NULL,to_wallet TEXT NOT NULL,amount_raw TEXT NOT NULL,PRIMARY KEY(asset,tx_hash,log_index))')
         with db:
             set_meta(db, 'transport', 'websocket-logs')
             set_meta(db, 'validation', 'provider stream log held for three heads; no separate header/receipt verification')
@@ -90,6 +92,11 @@ class StreamStore:
         with self.db:
             self.db.execute('INSERT OR REPLACE INTO stream_pending VALUES (?,?,?,?)',
                             (row['transactionHash'], idx, n, json.dumps(dict(row, _received_at=now()))))
+
+    def transfer(self,row):
+        if row.get('removed') or len(row.get('topics',[]))<3:return
+        word=lambda x:'0x'+x[-40:].lower()
+        with self.db:self.db.execute('INSERT OR IGNORE INTO token_transfers VALUES(?,?,?,?,?,?,?)',(row['address'].lower(),row['transactionHash'],int(row['logIndex'],16),int(row['blockNumber'],16),word(row['topics'][1]),word(row['topics'][2]),str(int(row.get('data','0x0'),16))))
 
     def flush(self):
         if self.head is None: return
@@ -195,6 +202,13 @@ async def consume(url, state):
                 response = json.loads(await asyncio.wait_for(ws.recv(), 20))
                 if not response.get('result'): raise RpcError('log subscription rejected')
                 log_id = response['result']
+                transfer_ids=set();subscribed=set()
+                assets=[r[0] for r in state.db.execute("SELECT DISTINCT asset FROM events WHERE kind IN ('pons_v2','long') AND name IN ('TokenLaunched','Create') ORDER BY block_number DESC LIMIT 50")]
+                next_id=10
+                if assets:
+                    await ws.send(json.dumps(dict(jsonrpc='2.0',id=next_id,method='eth_subscribe',params=['logs',{'address':assets,'topics':[TRANSFER]}])))
+                    response=json.loads(await asyncio.wait_for(ws.recv(),20));next_id+=1
+                    if response.get('result'):transfer_ids.add(response['result']);subscribed.update(assets)
                 await ws.send(json.dumps(dict(jsonrpc='2.0', id=3, method='eth_subscribe', params=['newHeads'])))
                 head_id = None
                 first_head = True
@@ -208,7 +222,15 @@ async def consume(url, state):
                         continue
                     params = payload.get('params', {})
                     if params.get('subscription') == log_id:
-                        state.log(params['result'])
+                        raw=params['result'];state.log(raw);kind=FACTORIES.get(raw.get('address','').lower())
+                        if kind in ('pons_v2','long'):
+                            try:
+                                name,v=decode(kind,raw);asset=(v.get('token') or v.get('asset','')).lower()
+                                if name in ('TokenLaunched','Create') and asset and asset not in subscribed:
+                                    await ws.send(json.dumps(dict(jsonrpc='2.0',id=next_id,method='eth_subscribe',params=['logs',{'address':asset,'topics':[TRANSFER]}])));subscribed.add(asset);next_id+=1
+                            except (ValueError,AttributeError):pass
+                    elif params.get('subscription') in transfer_ids:
+                        state.transfer(params['result'])
                     elif head_id and params.get('subscription') == head_id:
                         b = params['result']
                         if first_head:
@@ -217,6 +239,8 @@ async def consume(url, state):
                                 state.gap(max(1, old - 3), int(b['number'], 16))
                             first_head = False
                         state.header(b)
+                    elif payload.get('id',0)>=10 and payload.get('result'):
+                        transfer_ids.add(payload['result'])
         except asyncio.CancelledError: raise
         except Exception as exc:
             state.connected = False
