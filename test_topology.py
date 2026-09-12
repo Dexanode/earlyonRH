@@ -28,6 +28,12 @@ class TopologyTests(unittest.TestCase):
         project(self.db)
         self.assertEqual(self.db.execute("SELECT COUNT(*) FROM topology_edges WHERE source=?",(pool,)).fetchone()[0],3)
         self.assertEqual(self.db.execute("SELECT observation_type FROM topology_observations").fetchone()[0],'NEW_POOL_BIRTH')
+    def test_long_create_links_asset_quote_and_pool(self):
+        token='0x'+'a'*40;quote='0x'+'b'*40;pool='0x'+'c'*40;airlock='0x'+'d'*40
+        self.add('long','Create',airlock,token,{'asset':token,'numeraire':quote,'initializer':'0x'+'e'*40,'poolOrHook':pool})
+        project(self.db)
+        edges={(r[0],r[1],r[2]) for r in self.db.execute('SELECT source,relation,target FROM topology_edges')}
+        self.assertIn((token,'trades_on',pool),edges);self.assertIn((token,'paired_with',quote),edges)
     def test_unknown_factory_pool_birth_builds_generic_topology(self):
         factory='0x'+'5'*40;pool='0x'+'6'*40;t0='0x'+'7'*40;t1='0x'+'8'*40
         self.add('v3_factory','PoolCreated',factory,pool,{'token0':t0,'token1':t1,'fee':'3000','tickSpacing':'60','pool':pool})

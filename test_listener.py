@@ -52,6 +52,10 @@ class FakeRPC:
 
 
 class Tests(unittest.TestCase):
+    def test_long_airlock_create_event_decodes(self):
+        values={'asset':addr(20),'numeraire':addr(21),'initializer':addr(22),'poolOrHook':addr(23)}
+        name,decoded=decode('long',make_log('long',0,values,next(a for a,k in REGISTRY.items() if k=='long')))
+        self.assertEqual(name,'Create');self.assertEqual(decoded,values)
     def test_live_starts_near_head_and_resumes_without_reset(self):
         rpc = FakeRPC()
         c = Collector(self.db, rpc, factory_first=True)

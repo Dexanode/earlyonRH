@@ -101,8 +101,30 @@ def indexed_pool(asset, timeout=8):
     return max(pairs,key=lambda p:float((p.get('liquidity') or {}).get('usd') or 0)) if pairs else None
 
 
+def normalize_long(db,rpc,asset,launch):
+    values=json.loads(launch['decoded']);quote=values.get('numeraire')
+    token=metadata(db,rpc,asset)
+    if token.get('decimals') is None:return False
+    pool=indexed_pool(asset)
+    if not pool:return False
+    quote_token=pool.get('quoteToken') or {};change=pool.get('priceChange') or {};volume=pool.get('volume') or {}
+    stamp=now();price_quote=float(pool['priceNative']) if pool.get('priceNative') else None
+    price_usd=float(pool['priceUsd']) if pool.get('priceUsd') else None
+    mc_usd=float(pool.get('marketCap') or pool.get('fdv') or 0) or None
+    liq_usd=float((pool.get('liquidity') or {}).get('usd') or 0) or None
+    changes=[change.get(k) for k in ('m5','h1','h6','h24')]
+    row=(asset,stamp,token['symbol'],token['name'],token['decimals'],quote,quote_token.get('symbol'),None,price_quote,price_usd,None,mc_usd,None,liq_usd,None,None,None,*changes,'long-airlock+dexscreener','indexed-market',None)
+    with db:
+        db.execute('INSERT OR REPLACE INTO market_snapshots VALUES('+','.join('?'*24)+')',row)
+        db.execute('INSERT OR REPLACE INTO market_observations VALUES(?,?,?,?,?,?)',(asset,stamp,price_quote,liq_usd,float(volume.get('m5') or 0),changes[0]))
+    return True
+
+
 def normalize_asset(db,rpc,asset):
     launch=db.execute("SELECT decoded FROM events WHERE asset=? AND name='TokenLaunched' ORDER BY block_number LIMIT 1",(asset,)).fetchone()
+    if not launch:
+        long_launch=db.execute("SELECT decoded FROM events WHERE asset=? AND kind='long' AND name='Create' ORDER BY block_number LIMIT 1",(asset,)).fetchone()
+        return normalize_long(db,rpc,asset,long_launch) if long_launch else False
     watch=db.execute("SELECT address FROM watches WHERE asset=? AND kind='curve' ORDER BY created_block LIMIT 1",(asset,)).fetchone()
     if not launch or not watch:return False
     quote=json.loads(launch['decoded']).get('pairToken')
@@ -144,7 +166,7 @@ def normalize_asset(db,rpc,asset):
 
 def cycle(db,rpc,limit=25):
     head=int(dict(db.execute('SELECT key,value FROM meta')).get('head',0))
-    assets=[r[0] for r in db.execute("SELECT asset FROM events WHERE name IN ('CurveBuy','CurveSell') AND block_number>? GROUP BY asset ORDER BY COUNT(*) DESC LIMIT ?",(head-10000,limit))]
+    assets=[r[0] for r in db.execute("SELECT asset FROM events WHERE name IN ('Create','CurveBuy','CurveSell') AND block_number>? GROUP BY asset ORDER BY COUNT(*) DESC LIMIT ?",(head-10000,limit))]
     tables={r[0] for r in db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
     if 'alerts' in tables:
         tracked=[r[0] for r in db.execute("SELECT DISTINCT asset FROM alerts WHERE rule NOT IN ('dev-exit','contract-risk','serial-deployer') ORDER BY id DESC LIMIT ?",(limit,))]

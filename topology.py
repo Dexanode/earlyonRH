@@ -84,7 +84,7 @@ def observation(db, typ, subject, protocol, row, payload):
 
 def project_row(db, row):
     values = json.loads(row['decoded']); kind, name = row['kind'], row['name']
-    protocol = 'uniswap_v4' if kind == 'v4' else kind if kind in ('pons_v1', 'pons_v2') else None
+    protocol = 'uniswap_v4' if kind == 'v4' else kind if kind in ('pons_v1', 'pons_v2', 'long') else None
     block, ts, tx = row['block_number'], row['event_timestamp'], row['tx_hash']
     entity(db, row['address'], 'contract', protocol or kind, block, ts, tx,
            attributes={'listener_kind': kind})
@@ -102,6 +102,17 @@ def project_row(db, row):
             entity(db, values['pairToken'], 'token', protocol, block, ts, tx)
             edge(db, token, 'paired_with', values['pairToken'], protocol, block, ts, tx)
         observation(db, 'NEW_MARKET_BIRTH', token, protocol, row, values)
+    elif name == 'Create' and kind == 'long':
+        token,pool,quote=values.get('asset'),values.get('poolOrHook'),values.get('numeraire')
+        entity(db,token,'token',protocol,block,ts,tx);entity(db,pool,'pool_or_hook',protocol,block,ts,tx)
+        entity(db,quote,'token',protocol,block,ts,tx)
+        edge(db,row['address'],'created',token,protocol,block,ts,tx)
+        edge(db,token,'trades_on',pool,protocol,block,ts,tx)
+        edge(db,token,'paired_with',quote,protocol,block,ts,tx)
+        observation(db,'NEW_MARKET_BIRTH',token,protocol,row,values)
+    elif name == 'Migrate' and kind == 'long':
+        edge(db,values.get('asset'),'migrated_to',values.get('pool'),protocol,block,ts,tx)
+        observation(db,'MARKET_GRADUATED',values.get('asset'),protocol,row,values)
     elif name == 'Initialize' and kind == 'v4':
         pool = values.get('id')
         entity(db, pool, 'pool', protocol, block, ts, tx, attributes={'hooks': values.get('hooks')})

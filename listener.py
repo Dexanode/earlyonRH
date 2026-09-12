@@ -21,6 +21,7 @@ CHAIN = 4663
 REGISTRY = {
     '0xa5aab3f0c6eeadf30ef1d3eb997108e976351feb': 'pons_v1',
     '0x7ed598bcef8bd9edd8c97a195c6d13f40801ec7e': 'pons_v2',
+    '0xeb7c034704ef8dcd2d32324c1545f62fb4ad0862': 'long',
     '0x8366a39cc670b4001a1121b8f6a443a643e40951': 'v4',
 }
 EXPLORER = 'https://robinhoodchain.blockscout.com/tx/'
@@ -283,7 +284,7 @@ class Collector:
         discoveries = []
         for row in rows:
             kind = REGISTRY.get(row['address'].lower())
-            if kind not in ('pons_v1', 'pons_v2'): continue
+            if kind not in ('pons_v1', 'pons_v2', 'long'): continue
             try: name, values = decode(kind, row)
             except ValueError:
                 # Cannot advance past an undecodable launch: it would lose child events.
@@ -292,6 +293,9 @@ class Collector:
                 child = values['pool'] if kind == 'pons_v1' else values['curve']
                 entry = {'address': child, 'kind': 'v3_pool' if kind == 'pons_v1' else 'curve', 'asset': values['token'], 'created_block': int(row['blockNumber'], 16)}
                 watches[child] = entry; discoveries.append(entry)
+            elif name == 'Create':
+                entry={'address':values['poolOrHook'],'kind':'v3_pool','asset':values['asset'],'created_block':int(row['blockNumber'],16)}
+                watches[entry['address']]=entry;discoveries.append(entry)
         if watches:
             rows.extend(self.logs(list(watches), lo, hi))
         unique = {(r['transactionHash'], int(r['logIndex'], 16)): r for r in rows}
