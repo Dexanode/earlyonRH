@@ -106,10 +106,33 @@ def telegram_text(alert):
     return (f"🔎 <b>${symbol} — {html.escape(alert['title'])}</b>\n{name}\n\n<b>CA</b> · tap untuk copy\n<code>{asset}</code>\n\n<b>MARKET</b>\nMC {mc} · Liq {liq}\nVol 1h {metric(e.get('volume_1h_quote'))} {html.escape(quote)}\n5m {metric(e.get('change_5m'))}% · 1h {metric(e.get('change_1h'))}%\nBuy/sell {e.get('buys',0)}/{e.get('sells',0)} · buyers {e.get('unique_buyers',0)}\n\n<b>FLOW</b>\n{flow}\nSafety {html.escape(e.get('safety_status','unknown'))} · score {alert['score'] or '—'}\n\n<b>CREATOR</b>\n{html.escape(creator)}\n{html.escape(distribution)}\n{social} · {html.escape(e.get('social_status') or 'no-social-evidence')}\n\n<b>BUYERS</b>\n{proof}\n\n<a href=\"{gmgn}\">📈 Open token di GMGN</a>\n<i>Onchain evidence; contract dan exit path tetap perlu diverifikasi.</i>")[:4000]
 
 
+def hydrate_metadata(db, alert):
+    """Refresh alert evidence with metadata discovered after detection."""
+    alert=dict(alert);e=json.loads(alert['evidence'])
+    if e.get('symbol') and e.get('name'):return alert,True
+    try:
+        row=db.execute('SELECT symbol,name FROM token_metadata WHERE address=? AND error IS NULL',(alert['asset'],)).fetchone()
+    except sqlite3.OperationalError:
+        row=None
+    if row and (row['symbol'] or row['name']):
+        e['symbol']=e.get('symbol') or row['symbol'];e['name']=e.get('name') or row['name']
+        alert['evidence']=json.dumps(e,separators=(',',':'))
+        try:
+            with db:db.execute('UPDATE alerts SET evidence=? WHERE id=?',(alert['evidence'],alert['id']))
+        except sqlite3.OperationalError:
+            pass
+    return alert,bool(e.get('symbol') or e.get('name'))
+
+
 def deliver(db, token=None, chat_id=None, limit=10):
     if not token or not chat_id:return 0
     rows=db.execute("SELECT a.* FROM alert_deliveries d JOIN alerts a ON a.id=d.alert_id WHERE d.status IN ('pending','retry') AND d.attempts<5 ORDER BY a.id LIMIT ?",(limit,)).fetchall();sent=0
-    for alert in rows:
+    for raw_alert in rows:
+        alert,identified=hydrate_metadata(db,raw_alert)
+        created=dt.datetime.fromisoformat(alert['created_at'])
+        age=(dt.datetime.now(dt.timezone.utc)-created).total_seconds()
+        if alert['rule']=='onchain-flow-breakout' and not identified and age<45:
+            continue
         try:
             buttons={'inline_keyboard':[[{'text':'📈 Open GMGN','url':f'https://gmgn.ai/robinhood/token/{alert["asset"]}'},{'text':'🔍 Explorer','url':f'https://robinhoodchain.blockscout.com/token/{alert["asset"]}'}]]}
             body=parse.urlencode({'chat_id':chat_id,'text':telegram_text(alert),'parse_mode':'HTML','disable_web_page_preview':'true','reply_markup':json.dumps(buttons)}).encode()

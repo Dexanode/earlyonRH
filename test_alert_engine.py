@@ -3,7 +3,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from alert_engine import evaluate, matches, schema, source_wallets, track_lifecycle, telegram_text, telegram_worthy, suppress_untracked_risk_deliveries
+from alert_engine import evaluate, hydrate_metadata, matches, schema, source_wallets, track_lifecycle, telegram_text, telegram_worthy, suppress_untracked_risk_deliveries
 from listener import database
 from wallet_profiler import schema as wallet_schema
 
@@ -87,6 +87,14 @@ class AlertTests(unittest.TestCase):
         message=telegram_text(row)
         self.assertIn('$JAR',message);self.assertIn('Jar Agent',message);self.assertIn('1 WETH',message);self.assertIn('repeat 3×',message);self.assertIn('https://example/tx',message)
         self.assertIn('<code>'+candidate()['id']+'</code>',message);self.assertIn('https://gmgn.ai/robinhood/token/'+candidate()['id'],message)
+
+    def test_late_metadata_hydrates_alert_evidence(self):
+        self.db.execute('CREATE TABLE token_metadata(address TEXT PRIMARY KEY, checked_at TEXT, symbol TEXT, name TEXT, decimals INTEGER, total_supply TEXT, error TEXT)')
+        self.db.execute("INSERT INTO token_metadata VALUES('0xabc','now','ALPHA','Alpha Token',18,'1',NULL)")
+        alert={'id':7,'created_at':'2026-01-01T00:00:00+00:00','asset':'0xabc','rule':'onchain-flow-breakout','evidence':'{}'}
+        hydrated,identified=hydrate_metadata(self.db,alert)
+        self.assertTrue(identified)
+        self.assertEqual(json.loads(hydrated['evidence'])['symbol'],'ALPHA')
 
     def test_capital_rotation_requires_identified_safe_asset(self):
         good=candidate(symbol='MOVE',name='Move',market_status='quote-only',qualified_migrating_wallets_5m=2,migration_sources=1,age_blocks=500,buys_5m=3)
