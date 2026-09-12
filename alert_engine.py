@@ -133,6 +133,18 @@ def matches(c):
     fresh_alpha=(identified and bool(c.get('deployer')) and c.get('age_blocks') is not None and c['age_blocks']<=15000
                  and market_survived and live_flow and (c.get('last_trade_age_seconds') is None or c['last_trade_age_seconds']<=180)
                  and not c.get('dev_exit_detected') and not c.get('insider_exit_detected') and c.get('distribution_classification') not in ('possible-bundled-launch','creator-clustered-supply') and c.get('creator_classification')!='toxic-history' and (c.get('deployer_launch_count',0)<3 or c.get('creator_classification') in ('proven-runner','promising-history')) and c['safety_status']!='higher-risk')
+    # Launchpad flow is available before token metadata, external market snapshots,
+    # creator attribution, and contract reads. Surface a strong sustained imbalance
+    # immediately; enriched rules can confirm it later without blocking discovery.
+    onchain_breakout=(c.get('protocol') in ('curve','pons_v2','long')
+                      and c.get('age_blocks') is not None and 25<=c['age_blocks']<=3000
+                      and c.get('buys_5m',0)>=8 and c.get('buys_5m',0)-c.get('sells_5m',0)>=5
+                      and c.get('buy_sell_ratio',0)>=1.3 and c.get('unique_buyers',0)>=5
+                      and (c.get('last_trade_age_seconds') is None or c['last_trade_age_seconds']<=30)
+                      and c.get('activity_score',0)>=40
+                      and not c.get('dev_exit_detected') and not c.get('insider_exit_detected')
+                      and c.get('distribution_classification') not in ('possible-bundled-launch','creator-clustered-supply')
+                      and c.get('creator_classification')!='toxic-history' and c.get('safety_status')!='higher-risk')
     if c['safety_status']=='higher-risk':
         out.append(('contract-risk','critical','Contract risk terdeteksi',c.get('safety_score') or 0))
     if c.get('dev_exit_detected'):
@@ -150,6 +162,9 @@ def matches(c):
     elif identified and c.get('deployer_launch_count',0)>=3 and c.get('creator_classification') not in ('proven-runner','promising-history'):
         score=min(100,40+c['deployer_launch_count']*5)
         out.append(('serial-deployer','medium','Serial deployer belum terbukti',score))
+    if onchain_breakout and not fresh_alpha:
+        score=min(100,round(c.get('activity_score',0)+min(20,(c['buys_5m']-c['sells_5m'])*.5),1))
+        out.append(('onchain-flow-breakout','high','Launchpad flow breakout terdeteksi',score))
     if fresh_alpha and c.get('creator_classification')=='proven-runner' and c.get('creator_confidence') in ('medium','high'):
         out.append(('creator-track-record','high','Creator runner kembali launch',c.get('creator_reputation_score') or 0))
     if fresh_alpha and c.get('social_cross_linked') and c.get('social_confidence')=='high':
@@ -196,6 +211,8 @@ def source_wallets(db, asset, limit=5, preferred=None):
         if row['name'] in ('CurveBuy','DexBuy'):latest[wallet]=(row,values)
     preferred=set(preferred or ())
     eligible=[item for item in latest.items() if profiles.get(item[0],{}).get('smart_score',0)>=55 or capital.get(item[0],{}).get('buy_count',0)>=2]
+    if not eligible:
+        eligible=list(latest.items())
     ranked=sorted(eligible,key=lambda item:(item[0] in preferred,capital.get(item[0],{}).get('buy_count',0),profiles.get(item[0],{}).get('smart_score',0),item[1][0]['block_number']),reverse=True)[:limit]
     result=[]
     for wallet,(buy,values) in ranked:

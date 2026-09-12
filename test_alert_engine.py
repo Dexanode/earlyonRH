@@ -43,6 +43,14 @@ class AlertTests(unittest.TestCase):
         self.assertEqual(matches(candidate(buys_5m=3,sells_5m=4)),[])
         self.assertEqual(matches(candidate(buy_sell_ratio=1.18)),[])
 
+    def test_launchpad_flow_breakout_does_not_wait_for_enrichment(self):
+        raw=candidate(protocol='curve',symbol=None,name=None,market_status=None,deployer=None,
+                      market_observations=0,observation_span_seconds=0,safety_status='unknown',
+                      buys=20,sells=2,buys_5m=20,sells_5m=2,buy_sell_ratio=10,
+                      unique_buyers=12,activity_score=68,age_blocks=100,last_trade_age_seconds=2)
+        self.assertIn('onchain-flow-breakout',{r[0] for r in matches(raw)})
+        self.assertNotIn('onchain-flow-breakout',{r[0] for r in matches(dict(raw,buys_5m=4))})
+
     def test_serial_deployer_is_exposed_as_risk_evidence(self):
         rules={r[0] for r in matches(candidate(deployer_launch_count=4))}
         self.assertEqual(rules,{'serial-deployer'})
