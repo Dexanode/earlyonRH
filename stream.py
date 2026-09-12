@@ -29,6 +29,7 @@ class StreamStore:
         self.connected = False
         self.last_message = 0
         db.execute('CREATE TABLE IF NOT EXISTS stream_pending(tx TEXT,idx INTEGER,block INTEGER,body TEXT,PRIMARY KEY(tx,idx))')
+        db.execute('CREATE INDEX IF NOT EXISTS stream_pending_block ON stream_pending(block,idx)')
         db.execute('CREATE TABLE IF NOT EXISTS v4_asset_pools(pool_id TEXT PRIMARY KEY,asset TEXT NOT NULL,quote TEXT,currency0 TEXT,currency1 TEXT,created_block INTEGER NOT NULL)')
         db.execute('CREATE TABLE IF NOT EXISTS token_transfers(asset TEXT NOT NULL,tx_hash TEXT NOT NULL,log_index INTEGER NOT NULL,block_number INTEGER NOT NULL,from_wallet TEXT NOT NULL,to_wallet TEXT NOT NULL,amount_raw TEXT NOT NULL,PRIMARY KEY(asset,tx_hash,log_index))')
         with db:
@@ -105,7 +106,9 @@ class StreamStore:
         rows = [json.loads(r[0]) for r in self.db.execute('SELECT body FROM stream_pending WHERE block<=? ORDER BY block,idx LIMIT 5000', (target,))]
         # Launches precede child events even if subscription messages were reordered.
         rows.sort(key=lambda r: (int(r['blockNumber'], 16), r['address'].lower() not in FACTORIES, int(r['logIndex'], 16)))
-        launched={r['asset'].lower() for r in self.db.execute("SELECT DISTINCT asset FROM events WHERE name IN ('TokenLaunched','Create') AND asset IS NOT NULL")}
+        # Every launch adapter records its child in watches. Reading that compact
+        # registry avoids a full events-table scan on every new head.
+        launched={r['asset'].lower() for r in watches.values() if r.get('asset')}
         for raw in rows:
             if raw['address'].lower() in FACTORIES:
                 try:
@@ -203,7 +206,7 @@ async def consume(url, state):
                 if not response.get('result'): raise RpcError('log subscription rejected')
                 log_id = response['result']
                 transfer_ids=set();subscribed=set()
-                assets=[r[0] for r in state.db.execute("SELECT DISTINCT asset FROM events WHERE kind IN ('pons_v2','long') AND name IN ('TokenLaunched','Create') ORDER BY block_number DESC LIMIT 50")]
+                assets=[r[0] for r in state.db.execute("SELECT DISTINCT asset FROM watches WHERE kind IN ('curve','v3_pool') ORDER BY created_block DESC LIMIT 50")]
                 next_id=10
                 if assets:
                     await ws.send(json.dumps(dict(jsonrpc='2.0',id=next_id,method='eth_subscribe',params=['logs',{'address':assets,'topics':[TRANSFER]}])))
