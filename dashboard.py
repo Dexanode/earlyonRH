@@ -217,7 +217,7 @@ def read(dbpath, asset=None, offset=0):
             gmgn=gmgn_markets.get(c['id'],{});life=launchpad_lifecycles.get(c['id'],{})
             for key in ('first_seen_at','last_seen_at','price_usd','market_cap_usd','liquidity_usd','holder_count','security_status','price_delta_pct','market_cap_delta_pct','liquidity_delta_pct','error'):
                 c['gmgn_'+key]=gmgn.get(key)
-            for key in ('stage','created_at','creator','first_buy_at','seconds_to_first_buy','buys','sells','unique_buyers','curve_progress_pct','migrated_at','seconds_to_migration','metadata_seen_at','gmgn_seen_at'):
+            for key in ('protocol','stage','created_at','creator','first_buy_at','seconds_to_first_buy','buys','sells','unique_buyers','curve_progress_pct','migrated_at','seconds_to_migration','metadata_seen_at','gmgn_seen_at'):
                 c['launch_'+key]=life.get(key)
             history=market_history.get(c['id'],{})
             c['market_observations']=history.get('observations',0)
