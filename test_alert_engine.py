@@ -106,8 +106,8 @@ class AlertTests(unittest.TestCase):
     def test_lifecycle_tracks_returns_and_wallet_exits(self):
         recent=(dt.datetime.now(dt.timezone.utc)-dt.timedelta(minutes=1)).isoformat()
         with self.db:
-            self.db.execute('CREATE TABLE market_snapshots(asset TEXT PRIMARY KEY,price_quote REAL)')
-            self.db.execute('INSERT INTO market_snapshots VALUES(?,?)',(candidate()['id'],2.0))
+            self.db.execute('CREATE TABLE market_snapshots(asset TEXT PRIMARY KEY,price_quote REAL,decimals INTEGER,quote_decimals INTEGER)')
+            self.db.execute('INSERT INTO market_snapshots VALUES(?,?,?,?)',(candidate()['id'],2.0,18,18))
             self.db.execute('INSERT INTO alerts(created_at,asset,rule,severity,title,score,evidence) VALUES(?,?,?,?,?,?,?)',(recent,candidate()['id'],'x','high','x',80,json.dumps({'source_wallets':[]})))
         self.assertEqual(track_lifecycle(self.db),1)
         row=self.db.execute('SELECT * FROM alert_lifecycle').fetchone()

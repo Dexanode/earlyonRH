@@ -31,6 +31,8 @@ def schema(db):
         entry_price_quote REAL, latest_price_quote REAL, ath_price_quote REAL,
         return_5m REAL, return_15m REAL, return_1h REAL, return_6h REAL,
         current_return REAL, max_return REAL, drawdown_from_ath REAL,
+        discovery_entry_price_quote REAL, discovery_ath_price_quote REAL,
+        discovery_current_return REAL, discovery_max_return REAL,
         source_wallets INTEGER NOT NULL DEFAULT 0, wallets_sold INTEGER NOT NULL DEFAULT 0,
         post_alert_buys INTEGER NOT NULL DEFAULT 0, post_alert_sells INTEGER NOT NULL DEFAULT 0,
         FOREIGN KEY(alert_id) REFERENCES alerts(id));
@@ -49,6 +51,9 @@ def schema(db):
         with db:
             db.execute('ALTER TABLE alert_lifecycle ADD COLUMN tracking_started_at TEXT')
             db.execute('UPDATE alert_lifecycle SET tracking_started_at=updated_at WHERE tracking_started_at IS NULL')
+    for column in ('discovery_entry_price_quote','discovery_ath_price_quote','discovery_current_return','discovery_max_return'):
+        if column not in columns:
+            with db:db.execute(f'ALTER TABLE alert_lifecycle ADD COLUMN {column} REAL')
 
 
 def _pct(price, entry):
@@ -64,7 +69,7 @@ def track_lifecycle(db):
     # calibration history and must not delay evaluation of fresh flow.
     alerts=db.execute('SELECT id,created_at,asset,evidence FROM alerts WHERE created_at>=?',(cutoff,)).fetchall();updated=0
     for alert in alerts:
-        market=db.execute('SELECT price_quote FROM market_snapshots WHERE asset=?',(alert['asset'],)).fetchone()
+        market=db.execute('SELECT price_quote,decimals,quote_decimals FROM market_snapshots WHERE asset=?',(alert['asset'],)).fetchone()
         if not market or not market['price_quote']:continue
         price=float(market['price_quote']);old=db.execute('SELECT * FROM alert_lifecycle WHERE alert_id=?',(alert['id'],)).fetchone()
         evidence=json.loads(alert['evidence']);wallets={w['wallet'].lower() for w in evidence.get('source_wallets',[]) if w.get('wallet')}
@@ -82,12 +87,20 @@ def track_lifecycle(db):
                 wallet=(json.loads(row['decoded']).get('seller') or '').lower()
                 if wallet in wallets:sold.add(wallet)
         current=_pct(price,entry);maximum=_pct(ath,entry);drawdown=round((price/ath-1)*100,2) if ath else None
-        values=(alert['id'],now(),started,entry,price,ath,checkpoints['return_5m'],checkpoints['return_15m'],checkpoints['return_1h'],checkpoints['return_6h'],current,maximum,drawdown,len(wallets),len(sold),buys,sells)
-        columns='alert_id,updated_at,tracking_started_at,entry_price_quote,latest_price_quote,ath_price_quote,return_5m,return_15m,return_1h,return_6h,current_return,max_return,drawdown_from_ath,source_wallets,wallets_sold,post_alert_buys,post_alert_sells'
-        with db:db.execute(f'INSERT OR REPLACE INTO alert_lifecycle({columns}) VALUES('+','.join('?'*17)+')',values)
+        trade_prices=[]
+        if market['decimals'] is not None and market['quote_decimals'] is not None:
+            for trade in db.execute("SELECT decoded FROM events WHERE asset=? AND name IN ('CurveBuy','CurveSell','DexBuy','DexSell') ORDER BY block_number,log_index",(alert['asset'],)):
+                decoded=json.loads(trade['decoded']);quote_raw=int(decoded.get('quoteIn') or decoded.get('quoteOut') or 0);token_raw=int(decoded.get('tokensOut') or decoded.get('tokensIn') or 0)
+                if quote_raw and token_raw:trade_prices.append((quote_raw/(10**market['quote_decimals']))/(token_raw/(10**market['decimals'])))
+        discovery_entry=trade_prices[0] if trade_prices else (old['discovery_entry_price_quote'] if old and old['discovery_entry_price_quote'] else entry)
+        discovery_ath=max(trade_prices) if trade_prices else max(float(old['discovery_ath_price_quote'] or ath),ath) if old else ath
+        discovery_current=_pct(price,discovery_entry);discovery_maximum=_pct(discovery_ath,discovery_entry)
+        values=(alert['id'],now(),started,entry,price,ath,checkpoints['return_5m'],checkpoints['return_15m'],checkpoints['return_1h'],checkpoints['return_6h'],current,maximum,drawdown,discovery_entry,discovery_ath,discovery_current,discovery_maximum,len(wallets),len(sold),buys,sells)
+        columns='alert_id,updated_at,tracking_started_at,entry_price_quote,latest_price_quote,ath_price_quote,return_5m,return_15m,return_1h,return_6h,current_return,max_return,drawdown_from_ath,discovery_entry_price_quote,discovery_ath_price_quote,discovery_current_return,discovery_max_return,source_wallets,wallets_sold,post_alert_buys,post_alert_sells'
+        with db:db.execute(f'INSERT OR REPLACE INTO alert_lifecycle({columns}) VALUES('+','.join('?'*21)+')',values)
         for multiple in (2,3,5,10):
-            if maximum is not None and maximum>=((multiple-1)*100):
-                with db:db.execute('INSERT OR IGNORE INTO alert_milestones(alert_id,asset,multiple,reached_at,peak_return) VALUES(?,?,?,?,?)',(alert['id'],alert['asset'],multiple,now(),maximum))
+            if discovery_maximum is not None and discovery_maximum>=((multiple-1)*100):
+                with db:db.execute('INSERT OR IGNORE INTO alert_milestones(alert_id,asset,multiple,reached_at,peak_return) VALUES(?,?,?,?,?)',(alert['id'],alert['asset'],multiple,now(),discovery_maximum))
         updated+=1
     return updated
 
@@ -160,7 +173,7 @@ def deliver_milestones(db, token=None, chat_id=None, limit=10):
         evidence=json.loads(row['evidence']);symbol=html.escape(evidence.get('symbol') or f"NEW-{row['asset'][2:8].upper()}")
         asset=html.escape(row['asset']);gmgn=f"https://gmgn.ai/robinhood/token/{row['asset']}"
         message=(f"🏁 <b>${symbol} MILESTONE {row['multiple']}X</b>\n\n"
-                 f"Peak sejak alert: <b>+{row['peak_return']:.1f}%</b>\n"
+                 f"Peak sejak discovery onchain: <b>+{row['peak_return']:.1f}%</b>\n"
                  f"CA\n<code>{asset}</code>\n\n<a href=\"{gmgn}\">📈 Open token di GMGN</a>")
         try:
             body=parse.urlencode({'chat_id':chat_id,'text':message,'parse_mode':'HTML','disable_web_page_preview':'true'}).encode()
