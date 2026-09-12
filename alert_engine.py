@@ -252,15 +252,15 @@ def evaluate(db, candidates, cooldown=1800, improvement=8):
 
 
 def telegram_worthy(db, alert_id):
-    """Risk events notify only when they change a previously alerted thesis."""
+    """Telegram is the actionable alpha feed; risk evidence stays on dashboard."""
     alert=db.execute('SELECT asset,rule FROM alerts WHERE id=?',(alert_id,)).fetchone()
     if not alert:return False
-    if alert['rule'] not in RISK_ONLY_RULES:return True
-    return bool(db.execute("SELECT 1 FROM alerts WHERE asset=? AND id<? AND rule NOT IN ('dev-exit','contract-risk','serial-deployer') LIMIT 1",(alert['asset'],alert_id)).fetchone())
+    return alert['rule'] not in RISK_ONLY_RULES
 
 
 def suppress_untracked_risk_deliveries(db):
-    rows=db.execute("SELECT d.alert_id FROM alert_deliveries d JOIN alerts a ON a.id=d.alert_id WHERE d.status!='sent' AND a.rule IN ('dev-exit','contract-risk','serial-deployer')").fetchall()
+    placeholders=','.join('?' for _ in RISK_ONLY_RULES)
+    rows=db.execute(f"SELECT d.alert_id FROM alert_deliveries d JOIN alerts a ON a.id=d.alert_id WHERE d.status!='sent' AND a.rule IN ({placeholders})",tuple(RISK_ONLY_RULES)).fetchall()
     suppressed=0
     with db:
         for row in rows:

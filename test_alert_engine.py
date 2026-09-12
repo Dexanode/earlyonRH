@@ -47,7 +47,7 @@ class AlertTests(unittest.TestCase):
         rules={r[0] for r in matches(candidate(deployer_launch_count=4))}
         self.assertEqual(rules,{'serial-deployer'})
 
-    def test_untracked_dev_exit_is_silent_but_followup_exit_notifies(self):
+    def test_risk_evidence_stays_silent_even_after_positive_alert(self):
         asset=candidate()['id']
         lone=evaluate(self.db,[candidate(dev_exit_detected=True)])[0]
         self.assertFalse(telegram_worthy(self.db,lone))
@@ -55,7 +55,7 @@ class AlertTests(unittest.TestCase):
         positive=evaluate(self.db,[candidate(id=other)])[0]
         exit_id=evaluate(self.db,[candidate(id=other,dev_exit_detected=True)])[0]
         self.assertTrue(telegram_worthy(self.db,positive))
-        self.assertTrue(telegram_worthy(self.db,exit_id))
+        self.assertFalse(telegram_worthy(self.db,exit_id))
         with self.db:self.db.execute("INSERT INTO alert_deliveries(alert_id,channel,status) VALUES(?,'telegram','pending')",(lone,))
         self.assertEqual(suppress_untracked_risk_deliveries(self.db),1)
         self.assertEqual(self.db.execute('SELECT status FROM alert_deliveries WHERE alert_id=?',(lone,)).fetchone()[0],'suppressed')
