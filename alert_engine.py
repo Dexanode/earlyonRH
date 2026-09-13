@@ -461,13 +461,12 @@ def telegram_worthy(db, alert_id):
 
 
 def suppress_untracked_risk_deliveries(db):
-    placeholders=','.join('?' for _ in RISK_ONLY_RULES)
-    rows=db.execute(f"SELECT d.alert_id FROM alert_deliveries d JOIN alerts a ON a.id=d.alert_id WHERE d.status!='sent' AND a.rule IN ({placeholders})",tuple(RISK_ONLY_RULES)).fetchall()
+    rows=db.execute("SELECT d.alert_id FROM alert_deliveries d JOIN alerts a ON a.id=d.alert_id WHERE d.status IN ('pending','retry')").fetchall()
     suppressed=0
     with db:
         for row in rows:
             if not telegram_worthy(db,row['alert_id']):
-                db.execute("UPDATE alert_deliveries SET status='suppressed',error='risk event for asset without prior positive alert' WHERE alert_id=?",(row['alert_id'],))
+                db.execute("UPDATE alert_deliveries SET status='suppressed',error='dashboard-only rule; Telegram reserved for confirmed alpha' WHERE alert_id=?",(row['alert_id'],))
                 suppressed+=1
     return suppressed
 
