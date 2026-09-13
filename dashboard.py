@@ -95,14 +95,15 @@ def read(dbpath, asset=None, offset=0):
                 health['reason'] += ' Recovery: ' + meta['recovery_error']
         recent = db.execute('SELECT tx_hash,asset,kind,name,decoded,block_number,observed_at,event_timestamp FROM events ORDER BY block_number DESC,log_index DESC LIMIT 5000').fetchall()
         profitable={r['wallet']:dict(r) for r in db.execute('SELECT wallet,win_rate,realized_assets,realized_by_quote FROM wallet_performance WHERE win_rate>=55 AND realized_assets>=3')} if 'wallet_performance' in tables else {}
+        tracked={r['wallet']:dict(r) for r in db.execute('SELECT wallet,name,emoji FROM tracked_wallets WHERE enabled=1')} if 'tracked_wallets' in tables else {}
         tx_attrs={r['tx_hash']:dict(r) for r in db.execute('SELECT tx_hash,sender,relation FROM tx_attributions WHERE error IS NULL')} if 'tx_attributions' in tables else {}
         reference_ts=max((r['event_timestamp'] or 0 for r in recent),default=0)
         consensus={}
         for row in recent:
             if row['name'] not in ('CurveBuy','DexBuy') or not row['asset']:continue
             decoded=json.loads(row['decoded']);attr=tx_attrs.get(row['tx_hash'],{})
-            wallet=((attr.get('sender') if row['name']=='DexBuy' else None) or decoded.get('buyer') or '').lower()
-            if wallet not in profitable:continue
+            wallet=(attr.get('sender') or decoded.get('buyer') or '').lower()
+            if wallet not in profitable and wallet not in tracked:continue
             item=consensus.setdefault(row['asset'],{'w5':set(),'w15':set(),'w30':set(),'direct30':set(),'unknown30':set(),'proof':[]})
             seconds=max(0,reference_ts-(row['event_timestamp'] or 0))
             if seconds<=300:item['w5'].add(wallet)
@@ -112,7 +113,7 @@ def read(dbpath, asset=None, offset=0):
                 relation=attr.get('relation')
                 if relation=='direct':item['direct30'].add(wallet)
                 elif relation not in ('direct','routed'):item['unknown30'].add(wallet)
-                if len(item['proof'])<10:item['proof'].append({'wallet':wallet,'tx_hash':row['tx_hash'],'block':row['block_number'],'timestamp':row['event_timestamp'],'relation':attr.get('relation') or 'unknown','win_rate':profitable[wallet]['win_rate'],'realized_assets':profitable[wallet]['realized_assets']})
+                if len(item['proof'])<10:item['proof'].append({'wallet':wallet,'tx_hash':row['tx_hash'],'block':row['block_number'],'timestamp':row['event_timestamp'],'relation':attr.get('relation') or 'unknown','win_rate':profitable.get(wallet,{}).get('win_rate'),'realized_assets':profitable.get(wallet,{}).get('realized_assets',0),'tracked_name':tracked.get(wallet,{}).get('name'),'tracked':wallet in tracked})
         launches = {r['asset']: r['created_block'] for r in db.execute('SELECT asset,MIN(created_block) created_block FROM watches WHERE asset IS NOT NULL GROUP BY asset')}
         launch_deployers={r['target']:r['source'].lower() for r in db.execute("SELECT source,target FROM topology_edges WHERE relation='deployed'")} if 'topology_edges' in tables else {}
         creators={r['asset']:dict(r) for r in db.execute('SELECT * FROM asset_creators')} if 'asset_creators' in tables else {}
@@ -140,10 +141,10 @@ def read(dbpath, asset=None, offset=0):
                 c['events_last_100'] += row['block_number'] > head-100
                 c['events_previous_400'] += head-500 < row['block_number'] <= head-100
             values=json.loads(row['decoded'])
-            attr=tx_attrs.get(row['tx_hash'],{});buyer=((attr.get('sender') if row['name']=='DexBuy' else None) or values.get('buyer')) if row['name'] in ('CurveBuy','DexBuy') else None
+            attr=tx_attrs.get(row['tx_hash'],{});buyer=(attr.get('sender') or values.get('buyer')) if row['name'] in ('CurveBuy','DexBuy') else None
             if buyer: c['buyers'][buyer]=c['buyers'].get(buyer,0)+1
             if row['name'] in ('CurveBuy','CurveSell','DexBuy','DexSell'):
-                wallet=(attr.get('sender') if row['name'].startswith('Dex') else None) or (values.get('buyer') if row['name'].endswith('Buy') else values.get('seller'))
+                wallet=attr.get('sender') or (values.get('buyer') if row['name'].endswith('Buy') else values.get('seller'))
                 c['last_trade_timestamp']=max(c['last_trade_timestamp'] or 0,row['event_timestamp'] or 0)
                 if wallet:c['trade_wallets'].append((row['name'],wallet.lower()))
             if row['name']=='Initialize':
@@ -209,6 +210,7 @@ def read(dbpath, asset=None, offset=0):
             flow=consensus.get(c['id'],{});c['profitable_wallets_5m']=len(flow.get('w5',()))
             c['profitable_wallets_15m']=len(flow.get('w15',()));c['profitable_wallets_30m']=len(flow.get('w30',()))
             c['independent_profitable_wallets_30m']=len(flow.get('direct30',()));c['unattributed_profitable_wallets_30m']=len(flow.get('unknown30',()));c['consensus_proof']=flow.get('proof',[])
+            c['tracked_wallets_5m']=sum(w in tracked for w in flow.get('w5',()));c['tracked_wallets_15m']=sum(w in tracked for w in flow.get('w15',()));c['tracked_wallets_30m']=sum(w in tracked for w in flow.get('w30',()))
             market=markets.get(c['id'],{});meta_token=token_metadata.get(c['id'],{})
             for key in ('symbol','name','quote_symbol','quote_decimals','price_quote','price_usd','market_cap_quote','market_cap_usd','liquidity_quote','liquidity_usd','volume_5m_quote','volume_1h_quote','volume_24h_quote','change_5m','change_1h','change_6h','change_24h','source','status'):
                 value=market.get(key)

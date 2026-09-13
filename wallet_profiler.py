@@ -5,6 +5,7 @@ import json
 import logging
 import sqlite3
 import time
+from pathlib import Path
 
 from listener import database, now, set_meta
 
@@ -41,7 +42,24 @@ def schema(db):
         wallet TEXT PRIMARY KEY, updated_at TEXT NOT NULL, realized_assets INTEGER NOT NULL,
         wins INTEGER NOT NULL, losses INTEGER NOT NULL, win_rate REAL,
         realized_by_quote TEXT NOT NULL, coverage TEXT NOT NULL);
+      CREATE TABLE IF NOT EXISTS tracked_wallets(
+        wallet TEXT PRIMARY KEY, name TEXT NOT NULL, emoji TEXT,
+        source TEXT NOT NULL, enabled INTEGER NOT NULL DEFAULT 1,
+        imported_at TEXT NOT NULL);
     ''')
+
+
+def import_tracked_wallets(db, path='tracked_wallets.json'):
+    file=Path(path)
+    if not file.exists():return 0
+    rows=[]
+    for item in json.loads(file.read_text()):
+        wallet=str(item.get('address','')).lower()
+        if len(wallet)==42 and wallet.startswith('0x'):
+            rows.append((wallet,str(item.get('name') or wallet[:10]),item.get('emoji'),'user-watchlist',now()))
+    with db:
+        db.executemany('INSERT INTO tracked_wallets(wallet,name,emoji,source,imported_at) VALUES(?,?,?,?,?) ON CONFLICT(wallet) DO UPDATE SET name=excluded.name,emoji=excluded.emoji,enabled=1',rows)
+    return len(rows)
 
 
 def rebuild_pnl(db, limit=20000):
@@ -90,7 +108,7 @@ def rebuild(db, limit=20000, early_window=500):
     routed=defaultdict(lambda:{'members':set(),'tx':0})
     for row in rows:
         values=json.loads(row['decoded']);a=attrs.get(row['tx_hash'])
-        wallet=(a['sender'] if row['name'].startswith('Dex') and a and a['sender'] else (values.get('buyer') if row['name'].endswith('Buy') else values.get('seller')))
+        wallet=(a['sender'] if a and a['sender'] else (values.get('buyer') if row['name'].endswith('Buy') else values.get('seller')))
         if not wallet:continue
         wallet=wallet.lower();key=(row['asset'],wallet);item=per[key];side='buys' if row['name'] in ('CurveBuy','DexBuy') else 'sells';item[side]+=1
         item['first']=row['block_number'] if item['first'] is None else min(item['first'],row['block_number']);item['last']=max(item['last'] or 0,row['block_number'])
@@ -115,7 +133,7 @@ def rebuild(db, limit=20000, early_window=500):
 
 
 def main():
-    p=argparse.ArgumentParser();p.add_argument('--db',default='data/live.sqlite');p.add_argument('--interval',type=int,default=30);a=p.parse_args();db=database(a.db);schema(db)
+    p=argparse.ArgumentParser();p.add_argument('--db',default='data/live.sqlite');p.add_argument('--interval',type=int,default=30);p.add_argument('--tracked-wallets',default='tracked_wallets.json');a=p.parse_args();db=database(a.db);schema(db);import_tracked_wallets(db,a.tracked_wallets)
     try:
         while True:
             try:LOG.info('profiled wallets=%s',rebuild(db))
