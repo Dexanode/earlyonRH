@@ -61,7 +61,7 @@ class AlertTests(unittest.TestCase):
         lone=evaluate(self.db,[candidate(dev_exit_detected=True)])[0]
         self.assertFalse(telegram_worthy(self.db,lone))
         other='0x'+'2'*40
-        positive=evaluate(self.db,[candidate(id=other,market_cap_usd=120000,liquidity_usd=25000,market_observations=4,observation_span_seconds=600,profitable_wallets_30m=2,profitable_wallets_15m=1,independent_profitable_wallets_30m=1)])[0]
+        positive=evaluate(self.db,[candidate(id=other,market_status='indexed-market',change_5m=5,buys_5m=8,sells_5m=2,market_cap_usd=120000,liquidity_usd=25000,market_observations=4,observation_span_seconds=600,profitable_wallets_30m=2,profitable_wallets_15m=1,independent_profitable_wallets_30m=2)])[0]
         exit_id=evaluate(self.db,[candidate(id=other,dev_exit_detected=True)])[0]
         self.assertTrue(telegram_worthy(self.db,positive))
         self.assertFalse(telegram_worthy(self.db,exit_id))
@@ -70,10 +70,10 @@ class AlertTests(unittest.TestCase):
         self.assertEqual(self.db.execute('SELECT status FROM alert_deliveries WHERE alert_id=?',(lone,)).fetchone()[0],'suppressed')
 
     def test_established_market_can_signal_without_early_age_limit(self):
-        mature=candidate(age_blocks=50000,market_cap_usd=120000,liquidity_usd=20000,
+        mature=candidate(age_blocks=50000,market_status='indexed-market',change_5m=5,buys_5m=8,sells_5m=2,market_cap_usd=120000,liquidity_usd=20000,
                          market_observations=5,observation_span_seconds=900,
                          profitable_wallets_30m=2,profitable_wallets_15m=1,
-                         independent_profitable_wallets_30m=1)
+                         independent_profitable_wallets_30m=2)
         self.assertIn('established-smart-money',[r[0] for r in matches(mature)])
 
     def test_launchpad_breakout_stays_off_telegram(self):

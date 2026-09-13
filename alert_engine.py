@@ -299,12 +299,12 @@ def matches(c):
     market_cap=c.get('market_cap_usd') or c.get('gmgn_market_cap_usd') or 0
     liquidity=c.get('liquidity_usd') or c.get('gmgn_liquidity_usd') or 0
     proof=c.get('consensus_proof') or []
-    elite_wallet=any((w.get('win_rate') or 0)>=65 and (w.get('realized_assets') or 0)>=5 for w in proof)
-    established_market=(identified and 50_000<=market_cap<=2_000_000 and liquidity>=5_000
+    established_market=(identified and c.get('market_status')=='indexed-market'
+                        and 50_000<=market_cap<=2_000_000 and liquidity>=5_000
                         and c.get('market_observations',0)>=3 and c.get('observation_span_seconds',0)>=300
                         and (c.get('drawdown_from_observed_high') is None or c['drawdown_from_observed_high']>=-25)
-                        and (c.get('change_5m') is None or c['change_5m']>=-10)
-                        and c.get('buys_5m',0)>=3 and c.get('buys_5m',0)>=c.get('sells_5m',0)
+                        and c.get('change_5m') is not None and c['change_5m']>=0
+                        and c.get('buys_5m',0)>=5 and c.get('buys_5m',0)>=c.get('sells_5m',0)*1.3
                         and not c.get('dev_exit_detected') and not c.get('insider_exit_detected')
                         and c.get('distribution_classification') not in ('possible-bundled-launch','creator-clustered-supply')
                         and c.get('creator_classification')!='toxic-history' and c.get('safety_status')!='higher-risk')
@@ -344,10 +344,10 @@ def matches(c):
         score=min(100,round(c.get('activity_score',0)+min(20,(c['buys_5m']-c['sells_5m'])*.5),1))
         out.append(('onchain-flow-breakout','high','Launchpad flow breakout terdeteksi',score))
     mature_consensus=(c.get('profitable_wallets_30m',0)>=2 and c.get('profitable_wallets_15m',0)>=1
-                      and c.get('independent_profitable_wallets_30m',0)>=1)
-    if established_market and (mature_consensus or elite_wallet):
+                      and c.get('independent_profitable_wallets_30m',0)>=2)
+    if established_market and mature_consensus:
         score=min(100,62+c.get('profitable_wallets_5m',0)*7+c.get('profitable_wallets_15m',0)*5+
-                  c.get('independent_profitable_wallets_30m',0)*5+(8 if elite_wallet else 0))
+                  c.get('independent_profitable_wallets_30m',0)*5)
         out.append(('established-smart-money','high','Smart money masuk ke market terkonfirmasi',score))
     if fresh_alpha and c.get('creator_classification')=='proven-runner' and c.get('creator_confidence') in ('medium','high'):
         out.append(('creator-track-record','high','Creator runner kembali launch',c.get('creator_reputation_score') or 0))
