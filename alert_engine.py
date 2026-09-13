@@ -195,9 +195,8 @@ def telegram_text(alert):
 
 
 def hydrate_metadata(db, alert):
-    """Refresh alert evidence with metadata discovered after detection."""
+    """Refresh alert evidence with identity and market data found after detection."""
     alert=dict(alert);e=json.loads(alert['evidence'])
-    if e.get('symbol') and e.get('name'):return alert,True
     try:
         row=db.execute('SELECT symbol,name FROM token_metadata WHERE address=? AND error IS NULL',(alert['asset'],)).fetchone()
     except sqlite3.OperationalError:
@@ -211,11 +210,19 @@ def hydrate_metadata(db, alert):
             row=None
     if row and (row['symbol'] or row['name']):
         e['symbol']=e.get('symbol') or row['symbol'];e['name']=e.get('name') or row['name']
-        alert['evidence']=json.dumps(e,separators=(',',':'))
-        try:
-            with db:db.execute('UPDATE alerts SET evidence=? WHERE id=?',(alert['evidence'],alert['id']))
-        except sqlite3.OperationalError:
-            pass
+    try:
+        market=db.execute('SELECT * FROM market_snapshots WHERE asset=?',(alert['asset'],)).fetchone()
+    except sqlite3.OperationalError:
+        market=None
+    if market:
+        for key in ('symbol','name','quote_symbol','quote_decimals','price_quote','price_usd','market_cap_quote','market_cap_usd','liquidity_quote','liquidity_usd','volume_5m_quote','volume_1h_quote','volume_24h_quote','change_5m','change_1h','change_6h','change_24h'):
+            if market[key] is not None:e[key]=market[key]
+        e['market_source']=market['source'];e['market_status']=market['status']
+    alert['evidence']=json.dumps(e,separators=(',',':'))
+    try:
+        with db:db.execute('UPDATE alerts SET evidence=? WHERE id=?',(alert['evidence'],alert['id']))
+    except sqlite3.OperationalError:
+        pass
     return alert,bool(e.get('symbol') or e.get('name'))
 
 
@@ -223,12 +230,14 @@ def deliver(db, token=None, chat_id=None, limit=10):
     if not token or not chat_id:return 0
     rows=db.execute("SELECT a.* FROM alert_deliveries d JOIN alerts a ON a.id=d.alert_id WHERE d.status IN ('pending','retry') AND d.attempts<5 ORDER BY a.id LIMIT ?",(limit,)).fetchall();sent=0
     for raw_alert in rows:
-        alert,identified=hydrate_metadata(db,raw_alert)
+        alert,identified=hydrate_metadata(db,raw_alert);e=json.loads(alert['evidence'])
+        market_ready=bool(e.get('price_quote') and e.get('market_cap_quote') is not None and e.get('liquidity_quote') is not None and e.get('quote_decimals') is not None)
+        ready=identified and market_ready
         created=dt.datetime.fromisoformat(alert['created_at'])
         age=(dt.datetime.now(dt.timezone.utc)-created).total_seconds()
-        if not identified:
+        if not ready:
             if age<300:continue
-            with db:db.execute("UPDATE alert_deliveries SET status='suppressed',error='token metadata unresolved after 5 minutes' WHERE alert_id=?",(alert['id'],))
+            with db:db.execute("UPDATE alert_deliveries SET status='suppressed',error='identity or market snapshot unresolved after 5 minutes' WHERE alert_id=?",(alert['id'],))
             continue
         try:
             buttons={'inline_keyboard':[[{'text':'📈 Open GMGN','url':f'https://gmgn.ai/robinhood/token/{alert["asset"]}'},{'text':'🔍 Explorer','url':f'https://robinhoodchain.blockscout.com/token/{alert["asset"]}'}]]}

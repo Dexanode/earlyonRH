@@ -16,6 +16,7 @@ DECIMALS='0x313ce567';SYMBOL='0x95d89b41';NAME='0x06fdde03';SUPPLY='0x18160ddd';
 ZERO='0x'+'0'*40
 DEXSCREENER='https://api.dexscreener.com/latest/dex/tokens/'
 GMGN_OPENAPI='https://openapi.gmgn.ai/v1/token/info'
+QUOTE_USD_CACHE={}
 
 
 def schema(db):
@@ -146,6 +147,21 @@ def indexed_pool(asset, timeout=8):
     return max(pairs,key=lambda p:float((p.get('liquidity') or {}).get('usd') or 0)) if pairs else None
 
 
+def quote_usd(asset):
+    """Resolve an ERC-20 quote into USD through its deepest indexed pool."""
+    cached=QUOTE_USD_CACHE.get(asset.lower())
+    if cached and time.time()-cached[1]<300:return cached[0]
+    pool=indexed_pool(asset)
+    value=None
+    if pool:
+        base=(pool.get('baseToken') or {}).get('address','').lower()
+        price_usd=float(pool.get('priceUsd') or 0) or None
+        price_native=float(pool.get('priceNative') or 0) or None
+        value=price_usd if base==asset.lower() else price_usd/price_native if price_usd and price_native else None
+    QUOTE_USD_CACHE[asset.lower()]=(value,time.time())
+    return value
+
+
 def normalize_long(db,rpc,asset,launch):
     values=json.loads(launch['decoded']);quote=values.get('numeraire')
     token=metadata(db,rpc,asset)
@@ -187,6 +203,16 @@ def normalize_asset(db,rpc,asset):
     stamp=now()
     source='onchain-curve-events+native-balance' if quote.lower()==ZERO else 'onchain-curve-events+erc20-balance'
     price_quote,price_usd,mc_usd,liq_usd=metrics['price_quote'],None,None,None
+    if quote.lower()!=ZERO:
+        try:
+            quote_price_usd=quote_usd(quote)
+            if quote_price_usd:
+                price_usd=price_quote*quote_price_usd
+                mc_usd=mc*quote_price_usd if mc is not None else None
+                liq_usd=liquidity*quote_price_usd if liquidity is not None else None
+                source+='+quote-usd'
+        except (OSError,ValueError,json.JSONDecodeError) as exc:
+            LOG.warning('quote USD %s delayed: %s',quote,type(exc).__name__)
     changes=[metrics['change_5m'],metrics['change_1h'],metrics['change_6h'],metrics['change_24h']]
     graduated=db.execute("SELECT 1 FROM events WHERE asset=? AND name IN ('CurveCompleted','LaunchSwept') LIMIT 1",(asset,)).fetchone()
     if graduated:
