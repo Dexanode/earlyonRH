@@ -15,6 +15,7 @@ from market_normalizer import metadata
 
 LOG = logging.getLogger('alerts')
 RISK_ONLY_RULES={'dev-exit','contract-risk','serial-deployer','insider-exit','possible-bundled-launch','creator-clustered-supply','toxic-creator-history'}
+TELEGRAM_ALPHA_RULES={'established-smart-money','smart-money-consensus','creator-track-record','capital-rotation'}
 NATIVE_USD_CACHE={'value':None,'at':0.0}
 
 
@@ -295,6 +296,18 @@ def matches(c):
                      and (c.get('drawdown_from_observed_high') is None or c['drawdown_from_observed_high']>=-35))
     live_flow=(c.get('buys_5m',0)>=3 and c.get('buys_5m',0)>=c.get('sells_5m',0)
                and c.get('buy_sell_ratio',0)>=1.25)
+    market_cap=c.get('market_cap_usd') or c.get('gmgn_market_cap_usd') or 0
+    liquidity=c.get('liquidity_usd') or c.get('gmgn_liquidity_usd') or 0
+    proof=c.get('consensus_proof') or []
+    elite_wallet=any((w.get('win_rate') or 0)>=65 and (w.get('realized_assets') or 0)>=5 for w in proof)
+    established_market=(identified and 50_000<=market_cap<=2_000_000 and liquidity>=5_000
+                        and c.get('market_observations',0)>=3 and c.get('observation_span_seconds',0)>=300
+                        and (c.get('drawdown_from_observed_high') is None or c['drawdown_from_observed_high']>=-25)
+                        and (c.get('change_5m') is None or c['change_5m']>=-10)
+                        and c.get('buys_5m',0)>=3 and c.get('buys_5m',0)>=c.get('sells_5m',0)
+                        and not c.get('dev_exit_detected') and not c.get('insider_exit_detected')
+                        and c.get('distribution_classification') not in ('possible-bundled-launch','creator-clustered-supply')
+                        and c.get('creator_classification')!='toxic-history' and c.get('safety_status')!='higher-risk')
     fresh_alpha=(identified and bool(c.get('deployer')) and c.get('age_blocks') is not None and c['age_blocks']<=15000
                  and market_survived and live_flow and (c.get('last_trade_age_seconds') is None or c['last_trade_age_seconds']<=180)
                  and not c.get('dev_exit_detected') and not c.get('insider_exit_detected') and c.get('distribution_classification') not in ('possible-bundled-launch','creator-clustered-supply') and c.get('creator_classification')!='toxic-history' and (c.get('deployer_launch_count',0)<3 or c.get('creator_classification') in ('proven-runner','promising-history')) and c['safety_status']!='higher-risk')
@@ -330,6 +343,12 @@ def matches(c):
     if onchain_breakout and not fresh_alpha:
         score=min(100,round(c.get('activity_score',0)+min(20,(c['buys_5m']-c['sells_5m'])*.5),1))
         out.append(('onchain-flow-breakout','high','Launchpad flow breakout terdeteksi',score))
+    mature_consensus=(c.get('profitable_wallets_30m',0)>=2 and c.get('profitable_wallets_15m',0)>=1
+                      and c.get('independent_profitable_wallets_30m',0)>=1)
+    if established_market and (mature_consensus or elite_wallet):
+        score=min(100,62+c.get('profitable_wallets_5m',0)*7+c.get('profitable_wallets_15m',0)*5+
+                  c.get('independent_profitable_wallets_30m',0)*5+(8 if elite_wallet else 0))
+        out.append(('established-smart-money','high','Smart money masuk ke market terkonfirmasi',score))
     if fresh_alpha and c.get('creator_classification')=='proven-runner' and c.get('creator_confidence') in ('medium','high'):
         out.append(('creator-track-record','high','Creator runner kembali launch',c.get('creator_reputation_score') or 0))
     if fresh_alpha and c.get('social_cross_linked') and c.get('social_confidence')=='high':
@@ -438,7 +457,7 @@ def telegram_worthy(db, alert_id):
     """Telegram is the actionable alpha feed; risk evidence stays on dashboard."""
     alert=db.execute('SELECT asset,rule FROM alerts WHERE id=?',(alert_id,)).fetchone()
     if not alert:return False
-    return alert['rule'] not in RISK_ONLY_RULES
+    return alert['rule'] in TELEGRAM_ALPHA_RULES
 
 
 def suppress_untracked_risk_deliveries(db):

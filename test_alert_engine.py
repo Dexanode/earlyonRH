@@ -61,13 +61,27 @@ class AlertTests(unittest.TestCase):
         lone=evaluate(self.db,[candidate(dev_exit_detected=True)])[0]
         self.assertFalse(telegram_worthy(self.db,lone))
         other='0x'+'2'*40
-        positive=evaluate(self.db,[candidate(id=other)])[0]
+        positive=evaluate(self.db,[candidate(id=other,market_cap_usd=120000,liquidity_usd=25000,market_observations=4,observation_span_seconds=600,profitable_wallets_30m=2,profitable_wallets_15m=1,independent_profitable_wallets_30m=1)])[0]
         exit_id=evaluate(self.db,[candidate(id=other,dev_exit_detected=True)])[0]
         self.assertTrue(telegram_worthy(self.db,positive))
         self.assertFalse(telegram_worthy(self.db,exit_id))
         with self.db:self.db.execute("INSERT INTO alert_deliveries(alert_id,channel,status) VALUES(?,'telegram','pending')",(lone,))
         self.assertEqual(suppress_untracked_risk_deliveries(self.db),1)
         self.assertEqual(self.db.execute('SELECT status FROM alert_deliveries WHERE alert_id=?',(lone,)).fetchone()[0],'suppressed')
+
+    def test_established_market_can_signal_without_early_age_limit(self):
+        mature=candidate(age_blocks=50000,market_cap_usd=120000,liquidity_usd=20000,
+                         market_observations=5,observation_span_seconds=900,
+                         profitable_wallets_30m=2,profitable_wallets_15m=1,
+                         independent_profitable_wallets_30m=1)
+        self.assertIn('established-smart-money',[r[0] for r in matches(mature)])
+
+    def test_launchpad_breakout_stays_off_telegram(self):
+        alert_id=evaluate(self.db,[candidate(protocol='curve',symbol=None,name=None,market_status=None,deployer=None,
+          market_observations=0,observation_span_seconds=0,safety_status='unknown',buys=20,sells=2,
+          buys_5m=20,sells_5m=2,buy_sell_ratio=10,unique_buyers=12,activity_score=68,
+          age_blocks=100,last_trade_age_seconds=2)])[0]
+        self.assertFalse(telegram_worthy(self.db,alert_id))
     def test_critical_contract_risk(self):
         result=matches(candidate(safety_status='higher-risk',safety_score=10))
         self.assertEqual(result[0][:2],('contract-risk','critical'))
