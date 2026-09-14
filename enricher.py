@@ -108,10 +108,15 @@ def analyze_asset(db, rpc, asset):
 def attribute_transactions(db, rpc, assets=None, limit=50):
     marks = ','.join('?' for _ in (assets or ()))
     asset_filter = f'AND e.asset IN ({marks})' if marks else ''
-    params = (*assets, limit) if assets else (limit,)
+    try: head=int(get_meta(db,'head') or 0)
+    except ValueError: head=0
+    if not head:
+        head=db.execute('SELECT COALESCE(MAX(block_number),0) FROM events').fetchone()[0]
+    lower=max(0,head-10000)
+    params = (lower,*assets,limit) if assets else (lower,limit)
     rows = db.execute(f'''SELECT e.tx_hash,MAX(e.asset) asset,MAX(e.decoded) decoded FROM events e
       LEFT JOIN tx_attributions t ON t.tx_hash=e.tx_hash
-      WHERE e.name IN ('CurveBuy','CurveSell','DexBuy','DexSell') {asset_filter}
+      WHERE e.block_number>? AND e.name IN ('CurveBuy','CurveSell','DexBuy','DexSell') {asset_filter}
         AND (t.tx_hash IS NULL OR t.error IS NOT NULL)
       GROUP BY e.tx_hash
       ORDER BY e.block_number DESC,e.log_index DESC LIMIT ?''', params).fetchall()
