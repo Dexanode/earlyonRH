@@ -123,6 +123,7 @@ def attribute_transactions(db, rpc, assets=None, limit=50):
       WHERE t.tx_hash IS NULL {asset_filter}
       GROUP BY e.tx_hash
       ORDER BY e.block_number DESC,e.log_index DESC LIMIT ?''', params).fetchall()
+    processed=0
     for row in rows:
         actor_values = json.loads(row['decoded'])
         actor = actor_values.get('buyer') or actor_values.get('seller')
@@ -133,11 +134,14 @@ def attribute_transactions(db, rpc, assets=None, limit=50):
             relation = 'direct' if sender and sender == actor else 'v4-tx-sender' if sender and actor_values.get('_pool_id') else 'routed' if sender else 'unknown'
         except RateLimited:
             break
-        except RpcError as exc: error = str(exc)
+        except RpcError as exc:
+            if 'rate limit' in str(exc).lower() or '429' in str(exc):break
+            error = str(exc)
         with db:
             db.execute('INSERT OR REPLACE INTO tx_attributions VALUES (?,?,?,?,?,?,?)',
                        (row['tx_hash'], row['asset'], sender, actor, relation, now(), error))
-    return len(rows)
+        processed+=1
+    return processed
 
 
 def top_assets(db, limit=10):
@@ -147,7 +151,7 @@ def top_assets(db, limit=10):
       HAVING SUM(name IN ('CurveBuy','DexBuy'))>=3 ORDER BY COUNT(*) DESC LIMIT ?''', (head-3000, limit))]
 
 
-def cycle(db, rpc, tx_limit=50):
+def cycle(db, rpc, tx_limit=10):
     heartbeat = get_meta(db, 'heartbeat')
     try: fresh = (dt.datetime.now(dt.timezone.utc)-dt.datetime.fromisoformat(heartbeat)).total_seconds() < 600
     except (TypeError, ValueError): fresh = False
@@ -157,6 +161,9 @@ def cycle(db, rpc, tx_limit=50):
         LOG.info('live listener is not healthy; enrichment paused')
         return
     assets = top_assets(db)
+    # Wallet flow is time-sensitive; contract screening may wait when a free
+    # RPC endpoint is busy.
+    count = attribute_transactions(db, rpc, None, tx_limit)
     cutoff = (dt.datetime.now(dt.timezone.utc)-dt.timedelta(hours=6)).isoformat()
     for asset in assets:
         old = db.execute('SELECT analyzed_at FROM asset_analysis WHERE asset=?', (asset,)).fetchone()
@@ -165,7 +172,6 @@ def cycle(db, rpc, tx_limit=50):
             except RpcError as exc:
                 LOG.warning('asset analysis delayed: %s', exc)
                 break
-    count = attribute_transactions(db, rpc, None, tx_limit)
     LOG.info('enrichment cycle assets=%s tx=%s', len(assets), count)
 
 
@@ -175,7 +181,7 @@ def main():
     daily = int(os.environ.get('ENRICHMENT_DAILY_RPC_BUDGET', '100000'))
     if not 1 <= daily <= 100000: raise ValueError('invalid ENRICHMENT_DAILY_RPC_BUDGET')
     db = database('data/live.sqlite'); schema(db)
-    rpc = BudgetRPC(db, RPC(url, attempts=1, spacing=.25), daily)
+    rpc = BudgetRPC(db, RPC(url, attempts=1, spacing=1.0), daily)
     try:
         while True:
             try: cycle(db, rpc)
