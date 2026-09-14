@@ -114,15 +114,17 @@ def attribute_transactions(db, rpc, assets=None, limit=50):
         head=db.execute('SELECT COALESCE(MAX(block_number),0) FROM events').fetchone()[0]
     lower=max(0,head-10000)
     params = (lower,*assets,limit) if assets else (lower,limit)
-    rows = db.execute(f'''SELECT e.tx_hash,MAX(e.asset) asset,MAX(e.decoded) decoded FROM (
-        SELECT tx_hash,asset,decoded,block_number,log_index FROM events
-        WHERE block_number>? AND name IN ('CurveBuy','CurveSell','DexBuy','DexSell')
-        ORDER BY block_number DESC,log_index DESC LIMIT 5000
-      ) e
-      LEFT JOIN tx_attributions t ON t.tx_hash=e.tx_hash
-      WHERE t.tx_hash IS NULL {asset_filter}
-      GROUP BY e.tx_hash
-      ORDER BY e.block_number DESC,e.log_index DESC LIMIT ?''', params).fetchall()
+    recent=db.execute(f'''SELECT tx_hash,asset,decoded FROM events
+      WHERE block_number>? AND name IN ('CurveBuy','CurveSell','DexBuy','DexSell') {asset_filter}
+      ORDER BY block_number DESC,log_index DESC LIMIT 1000''',params[:-1]).fetchall()
+    unique={row['tx_hash']:row for row in recent}
+    if not unique:return 0
+    txs=list(unique)
+    existing=set()
+    for start in range(0,len(txs),300):
+        chunk=txs[start:start+300];qs=','.join('?' for _ in chunk)
+        existing.update(r[0] for r in db.execute(f'SELECT tx_hash FROM tx_attributions WHERE tx_hash IN ({qs})',chunk))
+    rows=[unique[tx] for tx in txs if tx not in existing][:limit]
     processed=0
     for row in rows:
         actor_values = json.loads(row['decoded'])
