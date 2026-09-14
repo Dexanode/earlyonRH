@@ -114,10 +114,13 @@ def attribute_transactions(db, rpc, assets=None, limit=50):
         head=db.execute('SELECT COALESCE(MAX(block_number),0) FROM events').fetchone()[0]
     lower=max(0,head-10000)
     params = (lower,*assets,limit) if assets else (lower,limit)
-    rows = db.execute(f'''SELECT e.tx_hash,MAX(e.asset) asset,MAX(e.decoded) decoded FROM events e
+    rows = db.execute(f'''SELECT e.tx_hash,MAX(e.asset) asset,MAX(e.decoded) decoded FROM (
+        SELECT tx_hash,asset,decoded,block_number,log_index FROM events
+        WHERE block_number>? AND name IN ('CurveBuy','CurveSell','DexBuy','DexSell')
+        ORDER BY block_number DESC,log_index DESC LIMIT 5000
+      ) e
       LEFT JOIN tx_attributions t ON t.tx_hash=e.tx_hash
-      WHERE e.block_number>? AND e.name IN ('CurveBuy','CurveSell','DexBuy','DexSell') {asset_filter}
-        AND (t.tx_hash IS NULL OR t.error IS NOT NULL)
+      WHERE t.tx_hash IS NULL {asset_filter}
       GROUP BY e.tx_hash
       ORDER BY e.block_number DESC,e.log_index DESC LIMIT ?''', params).fetchall()
     for row in rows:
